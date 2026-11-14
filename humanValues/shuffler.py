@@ -1,16 +1,26 @@
-
 """
 Astronaut Health Data Shuffler
-Version: 1.1.0
+Version: 1.2.0
 
-Continuous, time-based synthetic physiological simulation.
+Continuous, time-based synthetic physiological simulation with:
+- Current ISS position (Where the ISS at? API)
+- NASA DONKI space-weather event context
+- NASA OSDR RadLab historical ISS radiation measurements
+- Cumulative dose integration from timestamped dose-rate measurements
+
 Standard library only.
 """
 
+import json
 import math
 import random
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
+from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 
 # ============================================================
@@ -29,7 +39,8 @@ ASTRONAUT_PROFILE = {
     "baseline_skin_temp": 34.5,
 }
 
-# Update intervals in seconds.
+# All intervals are seconds. API polling is intentionally independent
+# from physiological sampling and ECG sampling.
 UPDATE_INTERVALS = {
     # Physiological
     "heart_rate": 1.0,
@@ -54,10 +65,33 @@ UPDATE_INTERVALS = {
     "cabin_humidity": 5.0,
     "cabin_oxygen": 5.0,
     "cabin_co2": 5.0,
-    "radiation_dose_rate_usv_h": 1.0,
     "microgravity_level": 0.1,
     "cabin_air_quality": 10.0,
 }
+
+API_CONFIG = {
+    "iss_position_url": "https://api.wheretheiss.at/v1/satellites/25544",
+    "iss_poll_interval_seconds": 10.0,
+
+    "nasa_donki_base_url": "https://api.nasa.gov/DONKI",
+    "nasa_donki_poll_interval_seconds": 900.0,
+    "nasa_donki_lookback_days": 7,
+
+    "radlab_url": "https://visualization.osdr.nasa.gov/radlab/api/",
+    "radlab_poll_interval_seconds": 3600.0,
+    "radlab_lookback_hours": 24,
+    # Do not integrate across large gaps: doing so would invent exposure.
+    "radlab_max_integration_gap_seconds": 21600.0,
+
+    "http_timeout_seconds": 12.0,
+    "user_agent": "AstronautHealthDataShuffler/1.2.0",
+    "api_keys_file": "api_keys.json",
+}
+
+# NASA API default is 1,000 requests/hour per key; DEMO_KEY is
+# substantially more restrictive. This client deliberately makes
+# only three DONKI requests per 15-minute refresh cycle.
+NASA_DONKI_ENDPOINTS = ("SEP", "CME", "GST")
 
 
 # ============================================================
@@ -65,21 +99,15 @@ UPDATE_INTERVALS = {
 # ============================================================
 
 def validate_number(name, value, minimum, maximum):
-
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TypeError(f"{name} must be numeric.")
-
     if not math.isfinite(value):
         raise ValueError(f"{name} must be finite.")
-
     if not minimum <= value <= maximum:
-        raise ValueError(
-            f"{name} must be between {minimum} and {maximum}."
-        )
+        raise ValueError(f"{name} must be between {minimum} and {maximum}.")
 
 
 def validate_profile():
-
     if not isinstance(ASTRONAUT_PROFILE, dict):
         raise TypeError("ASTRONAUT_PROFILE must be a dictionary.")
 
@@ -91,27 +119,16 @@ def validate_profile():
     }
 
     for key, (minimum, maximum) in required.items():
-
         if key not in ASTRONAUT_PROFILE:
             raise ValueError(f"Missing profile parameter: {key}")
-
-        validate_number(
-            key,
-            ASTRONAUT_PROFILE[key],
-            minimum,
-            maximum
-        )
+        validate_number(key, ASTRONAUT_PROFILE[key], minimum, maximum)
 
 
 def validate_mode():
-
     if not isinstance(SIMULATION_MODE, str):
         raise TypeError("SIMULATION_MODE must be a string.")
-
     if SIMULATION_MODE not in SUPPORTED_MODES:
-        raise ValueError(
-            f"Unsupported simulation mode: {SIMULATION_MODE}"
-        )
+        raise ValueError(f"Unsupported simulation mode: {SIMULATION_MODE}")
 
 
 # ============================================================
@@ -124,17 +141,141 @@ def clamp(value, minimum, maximum):
 
 def smooth_value(current, target, dt, time_constant):
     """Exponential smoothing for gradual physiological changes."""
-
     if dt <= 0:
         return current
-
     alpha = 1.0 - math.exp(-dt / time_constant)
-
     return current + (target - current) * alpha
 
 
 def random_value(minimum, maximum, decimals=1):
     return round(random.uniform(minimum, maximum), decimals)
+
+
+def utc_now():
+    return datetime.now(timezone.utc)
+
+
+def iso_utc(timestamp=None):
+    if timestamp is None:
+        timestamp = utc_now()
+    return timestamp.astimezone(timezone.utc).isoformat()
+
+
+def parse_timestamp(value):
+    """Parse an ISO-8601 timestamp or Unix timestamp into UTC datetime."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return datetime.fromtimestamp(value, tz=timezone.utc)
+
+    if not isinstance(value, str):
+        raise ValueError("Unsupported timestamp format.")
+
+    normalized = value.strip().replace("Z", "+00:00")
+    parsed = datetime.fromisoformat(normalized)
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+
+    return parsed.astimezone(timezone.utc)
+
+
+# ============================================================
+# API KEY CONFIGURATION
+# ============================================================
+
+def load_api_keys():
+    """
+    Load secrets from api_keys.json, located beside this Python file.
+
+    Expected format:
+    {
+        "nasa_api_key": "YOUR_NASA_API_KEY"
+    }
+
+    The file is optional. Without it, NASA requests are skipped instead
+    of silently falling back to the heavily rate-limited DEMO_KEY.
+    """
+    config_path = Path(__file__).resolve().parent / API_CONFIG["api_keys_file"]
+
+    if not config_path.is_file():
+        return {}, f"API key file not found: {config_path.name}"
+
+    try:
+        with config_path.open("r", encoding="utf-8") as file:
+            keys = json.load(file)
+    except (OSError, json.JSONDecodeError) as exc:
+        return {}, f"Could not read API key file: {exc}"
+
+    if not isinstance(keys, dict):
+        return {}, "API key file must contain a JSON object."
+
+    nasa_key = keys.get("nasa_api_key")
+    if nasa_key is not None:
+        if not isinstance(nasa_key, str) or not nasa_key.strip():
+            return {}, "nasa_api_key must be a non-empty string."
+        nasa_key = nasa_key.strip()
+
+    return {"nasa_api_key": nasa_key}, None
+
+
+_api_keys, _api_key_load_error = load_api_keys()
+
+
+# ============================================================
+# HTTP / API HELPERS
+# ============================================================
+
+def http_get_json(url, params=None):
+    """Perform a bounded-timeout GET request and decode a JSON response."""
+    if params:
+        query = urlencode(params)
+        separator = "&" if "?" in url else "?"
+        url = f"{url}{separator}{query}"
+
+    request = Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": API_CONFIG["user_agent"],
+        },
+        method="GET",
+    )
+
+    with urlopen(
+        request,
+        timeout=API_CONFIG["http_timeout_seconds"]
+    ) as response:
+        payload = response.read()
+        decoded = payload.decode("utf-8")
+        return json.loads(decoded), dict(response.headers.items())
+
+
+def retry_after_seconds(headers):
+    """Read Retry-After as seconds or an HTTP date."""
+    if not headers:
+        return None
+
+    value = headers.get("Retry-After") or headers.get("retry-after")
+    if not value:
+        return None
+
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        try:
+            retry_time = parsedate_to_datetime(value)
+            if retry_time.tzinfo is None:
+                retry_time = retry_time.replace(tzinfo=timezone.utc)
+            return max(0.0, (retry_time - utc_now()).total_seconds())
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+
+def api_error_message(exc):
+    if isinstance(exc, HTTPError):
+        return f"HTTP {exc.code}: {exc.reason}"
+    if isinstance(exc, URLError):
+        return f"Network error: {exc.reason}"
+    return str(exc)
 
 
 # ============================================================
@@ -168,14 +309,12 @@ _environment_state = {
     "cabin_humidity": 45.0,
     "cabin_oxygen": 20.9,
     "cabin_co2": 900.0,
-    "radiation_dose_rate_usv_h": 15.0,
     "microgravity_level": 0.001,
     "cabin_air_quality": 95.0,
 }
 
 _last_state_update = time.monotonic()
 _last_environment_update = time.monotonic()
-
 _last_publish = {}
 
 
@@ -184,69 +323,35 @@ _last_publish = {}
 # ============================================================
 
 def advance_physiological_state(dt):
-    """
-    Advance internal physiological state.
-
-    Values depend on previous state and shared physiological
-    conditions rather than independent random generation.
-    """
-
+    """Advance physiological state using previous state and correlations."""
     if dt <= 0:
         return
 
     dt = min(dt, 5.0)
 
-    # --------------------------------------------------------
-    # Activity
-    # --------------------------------------------------------
-
     activity = _state["physical_activity"]
-
     activity += random.gauss(0, 0.35 * math.sqrt(dt))
     activity += (5.0 - activity) * dt / 45.0
-
     activity = clamp(activity, 0, 25)
-
     _state["physical_activity"] = activity
 
-    # --------------------------------------------------------
-    # Sleep and stress
-    # --------------------------------------------------------
-
     sleep_quality = _state["sleep_quality"]
-
     target_stress = (
         12.0
         + (90.0 - sleep_quality) * 0.4
         + activity * 0.35
     )
-
     target_stress += random.gauss(0, 1.0)
     target_stress = clamp(target_stress, 5, 40)
 
     _state["stress_level"] = smooth_value(
-        _state["stress_level"],
-        target_stress,
-        dt,
-        45.0
+        _state["stress_level"], target_stress, dt, 45.0
     )
 
-    # --------------------------------------------------------
-    # Hydration
-    # --------------------------------------------------------
-
     hydration = _state["hydration_level"]
-
     hydration += random.gauss(0, 0.025 * math.sqrt(dt))
     hydration -= 0.002 * dt
-
-    hydration = clamp(hydration, 85, 100)
-
-    _state["hydration_level"] = hydration
-
-    # --------------------------------------------------------
-    # Cardiovascular system
-    # --------------------------------------------------------
+    _state["hydration_level"] = clamp(hydration, 85, 100)
 
     stress = _state["stress_level"]
 
@@ -254,42 +359,22 @@ def advance_physiological_state(dt):
         ASTRONAUT_PROFILE["resting_hr"]
         + activity * 0.8
         + stress * 0.15
-        + (95.0 - hydration) * 0.3
+        + (95.0 - _state["hydration_level"]) * 0.3
     )
-
     target_hr = clamp(target_hr, 55, 100)
 
     _state["heart_rate"] = smooth_value(
-        _state["heart_rate"],
-        target_hr,
-        dt,
-        3.0
+        _state["heart_rate"], target_hr, dt, 3.0
     )
 
-    target_systolic = (
-        112.0
-        + stress * 0.08
-        + activity * 0.08
-    )
-
-    target_diastolic = (
-        72.0
-        + stress * 0.05
-        + activity * 0.025
-    )
+    target_systolic = 112.0 + stress * 0.08 + activity * 0.08
+    target_diastolic = 72.0 + stress * 0.05 + activity * 0.025
 
     _state["systolic_bp"] = smooth_value(
-        _state["systolic_bp"],
-        target_systolic,
-        dt,
-        15.0
+        _state["systolic_bp"], target_systolic, dt, 15.0
     )
-
     _state["diastolic_bp"] = smooth_value(
-        _state["diastolic_bp"],
-        target_diastolic,
-        dt,
-        15.0
+        _state["diastolic_bp"], target_diastolic, dt, 15.0
     )
 
     target_hrv = (
@@ -297,89 +382,35 @@ def advance_physiological_state(dt):
         - stress * 0.45
         - activity * 0.25
     )
-
     _state["heart_rate_variability"] = smooth_value(
-        _state["heart_rate_variability"],
-        target_hrv,
-        dt,
-        20.0
+        _state["heart_rate_variability"], target_hrv, dt, 20.0
     )
 
-    # --------------------------------------------------------
-    # Respiratory system
-    # --------------------------------------------------------
-
-    target_rr = (
-        13.0
-        + activity * 0.1
-        + stress * 0.025
-    )
-
+    target_rr = 13.0 + activity * 0.1 + stress * 0.025
     _state["respiratory_rate"] = smooth_value(
-        _state["respiratory_rate"],
-        target_rr,
-        dt,
-        5.0
+        _state["respiratory_rate"], target_rr, dt, 5.0
     )
 
-    # --------------------------------------------------------
-    # Oxygen saturation
-    # --------------------------------------------------------
-
-    # Normal-mode oxygen saturation remains stable.
     target_spo2 = 98.5 - max(0, stress - 25) * 0.015
-
     _state["spo2"] = smooth_value(
-        _state["spo2"],
-        target_spo2,
-        dt,
-        8.0
+        _state["spo2"], target_spo2, dt, 8.0
     )
 
-    # --------------------------------------------------------
-    # Body temperature
-    # --------------------------------------------------------
-
-    target_temp = (
-        36.6
-        + activity * 0.004
-        + stress * 0.001
-    )
-
+    target_temp = 36.6 + activity * 0.004 + stress * 0.001
     _state["body_temperature"] = smooth_value(
-        _state["body_temperature"],
-        target_temp,
-        dt,
-        60.0
+        _state["body_temperature"], target_temp, dt, 60.0
     )
 
     target_skin_temp = (
-        ASTRONAUT_PROFILE["baseline_skin_temp"]
-        + activity * 0.01
+        ASTRONAUT_PROFILE["baseline_skin_temp"] + activity * 0.01
     )
-
     _state["skin_temperature"] = smooth_value(
-        _state["skin_temperature"],
-        target_skin_temp,
-        dt,
-        20.0
+        _state["skin_temperature"], target_skin_temp, dt, 20.0
     )
 
-    # --------------------------------------------------------
-    # Blood glucose
-    # --------------------------------------------------------
-
-    target_glucose = (
-        90.0
-        + stress * 0.12
-        - activity * 0.08
-    )
-
+    target_glucose = 90.0 + stress * 0.12 - activity * 0.08
     _state["blood_glucose"] = smooth_value(
-        _state["blood_glucose"],
-        target_glucose,
-        dt,
-        120.0
+        _state["blood_glucose"], target_glucose, dt, 120.0
     )
 
 
@@ -388,13 +419,10 @@ def advance_physiological_state(dt):
 # ============================================================
 
 def advance_environmental_state(dt):
-
     if dt <= 0:
         return
 
     dt = min(dt, 5.0)
-
-    # Slow environmental fluctuations.
 
     changes = {
         "cabin_temperature": (0.015, 21, 24),
@@ -402,22 +430,14 @@ def advance_environmental_state(dt):
         "cabin_humidity": (0.04, 35, 55),
         "cabin_oxygen": (0.003, 20.5, 21.0),
         "cabin_co2": (0.8, 500, 1500),
-        "radiation_dose_rate_usv_h": (0.08, 5, 30),
         "microgravity_level": (0.00001, 0.0001, 0.01),
         "cabin_air_quality": (0.015, 90, 100),
     }
 
     for key, (noise, minimum, maximum) in changes.items():
-
         current = _environment_state[key]
-
         current += random.gauss(0, noise * math.sqrt(dt))
-
-        _environment_state[key] = clamp(
-            current,
-            minimum,
-            maximum
-        )
+        _environment_state[key] = clamp(current, minimum, maximum)
 
 
 # ============================================================
@@ -425,19 +445,13 @@ def advance_environmental_state(dt):
 # ============================================================
 
 def publish_due_values(target, source, now):
-    """
-    Update only values whose sampling interval has elapsed.
-    """
-
+    """Publish values only when their individual sampling interval elapsed."""
     for key, interval in UPDATE_INTERVALS.items():
-
         if key not in source:
             continue
 
         last_time = _last_publish.get(key)
-
         if last_time is None or now - last_time >= interval:
-
             target[key] = source[key]
             _last_publish[key] = now
 
@@ -450,94 +464,515 @@ _ecg_phase = 0.0
 
 
 def _circular_gaussian(phase, center, width):
-    """Generate a Gaussian wave with circular phase wrapping."""
-
     distance = (phase - center + 0.5) % 1.0 - 0.5
-
-    return math.exp(
-        -0.5 * (distance / width) ** 2
-    )
+    return math.exp(-0.5 * (distance / width) ** 2)
 
 
 def _generate_ecg_point(phase):
-    """
-    Simplified synthetic P-QRS-T waveform.
-
-    Output unit: millivolts (mV).
-    This is a visualization model, not a diagnostic ECG.
-    """
-
-    p_wave = 0.12 * _circular_gaussian(
-        phase, 0.18, 0.025
-    )
-
-    q_wave = -0.15 * _circular_gaussian(
-        phase, 0.275, 0.008
-    )
-
-    r_wave = 1.0 * _circular_gaussian(
-        phase, 0.30, 0.006
-    )
-
-    s_wave = -0.25 * _circular_gaussian(
-        phase, 0.325, 0.010
-    )
-
-    t_wave = 0.30 * _circular_gaussian(
-        phase, 0.55, 0.050
-    )
-
+    """Simplified synthetic P-QRS-T waveform; visualization only."""
+    p_wave = 0.12 * _circular_gaussian(phase, 0.18, 0.025)
+    q_wave = -0.15 * _circular_gaussian(phase, 0.275, 0.008)
+    r_wave = 1.0 * _circular_gaussian(phase, 0.30, 0.006)
+    s_wave = -0.25 * _circular_gaussian(phase, 0.325, 0.010)
+    t_wave = 0.30 * _circular_gaussian(phase, 0.55, 0.050)
     noise = random.gauss(0, 0.005)
-
-    return (
-        p_wave
-        + q_wave
-        + r_wave
-        + s_wave
-        + t_wave
-        + noise
-    )
+    return p_wave + q_wave + r_wave + s_wave + t_wave + noise
 
 
 def get_ecg_samples(sample_count=25):
     """
     Generate ECG samples at 500 Hz.
-
     A sample_count of 25 represents 50 ms of signal.
-
-    Returns:
-        list[float]: ECG waveform samples in mV.
+    Output values are millivolts (mV), not diagnostic ECG data.
     """
-
     global _ecg_phase
 
     if isinstance(sample_count, bool) or not isinstance(sample_count, int):
         raise TypeError("sample_count must be an integer.")
-
     if not 1 <= sample_count <= 5000:
-        raise ValueError(
-            "sample_count must be between 1 and 5000."
-        )
+        raise ValueError("sample_count must be between 1 and 5000.")
 
     bpm = physiological_data.get("heart_rate", 68.0)
-
     samples = []
-
-    phase_increment = (
-        bpm / (60.0 * ECG_SAMPLE_RATE_HZ)
-    )
+    phase_increment = bpm / (60.0 * ECG_SAMPLE_RATE_HZ)
 
     for _ in range(sample_count):
-
-        sample = _generate_ecg_point(_ecg_phase)
-
-        samples.append(round(sample, 5))
-
-        _ecg_phase = (
-            _ecg_phase + phase_increment
-        ) % 1.0
+        samples.append(round(_generate_ecg_point(_ecg_phase), 5))
+        _ecg_phase = (_ecg_phase + phase_increment) % 1.0
 
     return samples
+
+
+# ============================================================
+# ISS POSITION API
+# ============================================================
+
+iss_position_data = {
+    "latitude": None,
+    "longitude": None,
+    "altitude_km": None,
+    "velocity_km_h": None,
+    "visibility": None,
+    "timestamp": None,
+    "last_api_update": None,
+    "data_source": "api.wheretheiss.at",
+    "status": "NOT_YET_FETCHED",
+    "last_error": None,
+}
+
+_iss_last_attempt = 0.0
+_iss_failure_backoff = 0.0
+
+
+def update_iss_position(force=False):
+    """Fetch current ISS position with cache and failure backoff."""
+    global _iss_last_attempt, _iss_failure_backoff
+
+    now_mono = time.monotonic()
+    if not force:
+        wait_for = max(
+            API_CONFIG["iss_poll_interval_seconds"],
+            _iss_failure_backoff,
+        )
+        if now_mono - _iss_last_attempt < wait_for:
+            return False
+
+    _iss_last_attempt = now_mono
+
+    try:
+        payload, _headers = http_get_json(API_CONFIG["iss_position_url"])
+
+        required = ("latitude", "longitude", "altitude", "timestamp")
+        if not isinstance(payload, dict) or any(k not in payload for k in required):
+            raise ValueError("ISS API response is missing required fields.")
+
+        latitude = float(payload["latitude"])
+        longitude = float(payload["longitude"])
+        altitude = float(payload["altitude"])
+        timestamp = float(payload["timestamp"])
+
+        validate_number("ISS latitude", latitude, -90, 90)
+        validate_number("ISS longitude", longitude, -180, 180)
+        validate_number("ISS altitude", altitude, 0, 1000)
+        validate_number("ISS timestamp", timestamp, 0, 10000000000)
+
+        velocity = payload.get("velocity")
+        if velocity is not None:
+            velocity = float(velocity)
+            validate_number("ISS velocity", velocity, 0, 100000)
+
+        iss_position_data.update({
+            "latitude": latitude,
+            "longitude": longitude,
+            "altitude_km": altitude,
+            "velocity_km_h": velocity,
+            "visibility": payload.get("visibility"),
+            "timestamp": iso_utc(datetime.fromtimestamp(timestamp, timezone.utc)),
+            "last_api_update": iso_utc(),
+            "status": "OK",
+            "last_error": None,
+        })
+
+        _iss_failure_backoff = 0.0
+        return True
+
+    except (HTTPError, URLError, TimeoutError, OSError, ValueError,
+            TypeError, json.JSONDecodeError) as exc:
+        iss_position_data["status"] = "STALE" if iss_position_data["timestamp"] else "ERROR"
+        iss_position_data["last_error"] = api_error_message(exc)
+        _iss_failure_backoff = min(
+            300.0,
+            max(30.0, _iss_failure_backoff * 2.0),
+        )
+        return False
+
+
+# ============================================================
+# NASA DONKI SPACE WEATHER API
+# ============================================================
+
+space_weather_data = {
+    "sep_events": [],
+    "cme_events": [],
+    "geomagnetic_storms": [],
+    "last_api_update": None,
+    "data_source": "NASA DONKI",
+    "status": "NOT_YET_FETCHED",
+    "last_error": None,
+    "api_rate_limit": None,
+    "api_rate_remaining": None,
+}
+
+_donki_last_attempt = 0.0
+_donki_failure_backoff = 0.0
+
+
+def _donki_date_range():
+    end_date = utc_now().date()
+    start_date = end_date - timedelta(
+        days=API_CONFIG["nasa_donki_lookback_days"]
+    )
+    return start_date.isoformat(), end_date.isoformat()
+
+
+def update_space_weather(force=False):
+    """
+    Fetch SEP, CME and GST event context from NASA DONKI.
+
+    This is not a radiation dosimeter. DONKI event records are not
+    converted into dose-rate values.
+    """
+    global _donki_last_attempt, _donki_failure_backoff
+
+    nasa_key = _api_keys.get("nasa_api_key")
+    if not nasa_key:
+        space_weather_data["status"] = "DISABLED_NO_API_KEY"
+        space_weather_data["last_error"] = (
+            _api_key_load_error or "nasa_api_key is not configured."
+        )
+        return False
+
+    now_mono = time.monotonic()
+    wait_for = max(
+        API_CONFIG["nasa_donki_poll_interval_seconds"],
+        _donki_failure_backoff,
+    )
+    if not force and now_mono - _donki_last_attempt < wait_for:
+        return False
+
+    _donki_last_attempt = now_mono
+    start_date, end_date = _donki_date_range()
+    fetched = {}
+    latest_rate_limit = None
+    latest_rate_remaining = None
+
+    try:
+        for event_type in NASA_DONKI_ENDPOINTS:
+            url = f"{API_CONFIG['nasa_donki_base_url']}/{event_type}"
+            payload, headers = http_get_json(
+                url,
+                {
+                    "startDate": start_date,
+                    "endDate": end_date,
+                    "api_key": nasa_key,
+                },
+            )
+
+            if not isinstance(payload, list):
+                raise ValueError(f"DONKI {event_type} response was not a list.")
+
+            fetched[event_type] = payload
+            latest_rate_limit = (
+                headers.get("X-RateLimit-Limit")
+                or headers.get("x-ratelimit-limit")
+                or latest_rate_limit
+            )
+            latest_rate_remaining = (
+                headers.get("X-RateLimit-Remaining")
+                or headers.get("x-ratelimit-remaining")
+                or latest_rate_remaining
+            )
+
+        # Replace event snapshots only after all three requests succeed.
+        space_weather_data.update({
+            "sep_events": fetched["SEP"],
+            "cme_events": fetched["CME"],
+            "geomagnetic_storms": fetched["GST"],
+            "last_api_update": iso_utc(),
+            "status": "OK",
+            "last_error": None,
+            "api_rate_limit": latest_rate_limit,
+            "api_rate_remaining": latest_rate_remaining,
+        })
+        _donki_failure_backoff = 0.0
+        return True
+
+    except HTTPError as exc:
+        retry_after = retry_after_seconds(exc.headers)
+        if retry_after is not None:
+            _donki_failure_backoff = min(3600.0, max(60.0, retry_after))
+        else:
+            _donki_failure_backoff = min(
+                3600.0, max(60.0, _donki_failure_backoff * 2.0)
+            )
+        space_weather_data["status"] = (
+            "STALE" if space_weather_data["last_api_update"] else "ERROR"
+        )
+        space_weather_data["last_error"] = api_error_message(exc)
+        return False
+
+    except (URLError, TimeoutError, OSError, ValueError, TypeError,
+            json.JSONDecodeError) as exc:
+        _donki_failure_backoff = min(
+            3600.0, max(60.0, _donki_failure_backoff * 2.0)
+        )
+        space_weather_data["status"] = (
+            "STALE" if space_weather_data["last_api_update"] else "ERROR"
+        )
+        space_weather_data["last_error"] = api_error_message(exc)
+        return False
+
+
+# ============================================================
+# NASA OSDR RADLAB RADIATION DATA
+# ============================================================
+
+radiation_dosimetry_data = {
+    "dose_rate_usv_h": None,
+    "cumulative_dose_usv": 0.0,
+    "cumulative_dose_msv": 0.0,
+    "last_measurement_timestamp": None,
+    "last_measurement_latitude": None,
+    "last_measurement_longitude": None,
+    "last_measurement_altitude_km": None,
+    "instrument_id": None,
+    "measurement_count": 0,
+    "last_api_update": None,
+    "data_source": "NASA OSDR RadLab",
+    "measurement_status": "NO_MEASUREMENTS",
+    "integration_status": "NO_DOSE_INTEGRATED",
+    "last_error": None,
+}
+
+_radlab_last_attempt = 0.0
+_radlab_failure_backoff = 0.0
+_radlab_seen_timestamps = set()
+_radlab_previous_sample = None
+_radiation_session_start = utc_now()
+
+
+def _radlab_query_url():
+    """
+    Request the latest historical ISS dose-equivalent-rate records.
+    RadLab returns archived measurements, not a live telemetry stream.
+    """
+    since = utc_now() - timedelta(
+        hours=API_CONFIG["radlab_lookback_hours"]
+    )
+    since_text = since.strftime("%Y-%m-%dT%H:%M")
+
+    params = [
+        ("spacecraft", "ISS"),
+        ("timestamp>=", since_text),
+        ("dose_equivalent_rate", ""),
+        ("latitude", ""),
+        ("longitude", ""),
+        ("altitude", ""),
+        ("format", "json"),
+    ]
+    return API_CONFIG["radlab_url"] + "?" + urlencode(params)
+
+
+def _radlab_rows(payload):
+    """Normalize common JSON response shapes into a list of row dictionaries."""
+    if isinstance(payload, list):
+        return payload
+
+    if isinstance(payload, dict):
+        for key in ("data", "results", "rows", "records"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return value
+
+        # Column-oriented JSON can be returned by tabular services.
+        if payload and all(isinstance(value, list) for value in payload.values()):
+            columns = list(payload.keys())
+            lengths = {len(payload[column]) for column in columns}
+            if len(lengths) == 1:
+                return [
+                    {column: payload[column][index] for column in columns}
+                    for index in range(next(iter(lengths), 0))
+                ]
+
+    raise ValueError("Unrecognized RadLab JSON response structure.")
+
+
+def _row_value(row, *names):
+    lowered = {str(key).lower(): value for key, value in row.items()}
+    for name in names:
+        value = lowered.get(name.lower())
+        if value not in (None, "", "NA", "NaN", "nan"):
+            return value
+    return None
+
+
+def _integrate_dose_sample(timestamp, dose_rate):
+    """
+    Trapezoidal integration of dose-equivalent rate.
+
+    dose_rate is μSv/hour; elapsed seconds are converted to hours.
+    Large gaps are deliberately not integrated, avoiding fabricated dose.
+    """
+    global _radlab_previous_sample
+
+    current = (timestamp, dose_rate)
+    previous = _radlab_previous_sample
+
+    if previous is None:
+        _radlab_previous_sample = current
+        radiation_dosimetry_data["integration_status"] = "WAITING_FOR_NEXT_SAMPLE"
+        return
+
+    previous_timestamp, previous_rate = previous
+    elapsed_seconds = (timestamp - previous_timestamp).total_seconds()
+
+    if elapsed_seconds <= 0:
+        return
+
+    if elapsed_seconds <= API_CONFIG["radlab_max_integration_gap_seconds"]:
+        average_rate = (previous_rate + dose_rate) / 2.0
+        dose_increment_usv = average_rate * (elapsed_seconds / 3600.0)
+
+        radiation_dosimetry_data["cumulative_dose_usv"] += dose_increment_usv
+        radiation_dosimetry_data["cumulative_dose_msv"] = (
+            radiation_dosimetry_data["cumulative_dose_usv"] / 1000.0
+        )
+        radiation_dosimetry_data["integration_status"] = "INTEGRATING"
+    else:
+        radiation_dosimetry_data["integration_status"] = (
+            "GAP_NOT_INTEGRATED"
+        )
+
+    _radlab_previous_sample = current
+
+
+def update_radiation_measurements(force=False):
+    """
+    Retrieve archived ISS dose-equivalent-rate records from NASA RadLab.
+
+    Only new, timestamped records are processed. Repeated polling therefore
+    does not double-count the same measurement.
+    """
+    global _radlab_last_attempt, _radlab_failure_backoff
+
+    now_mono = time.monotonic()
+    wait_for = max(
+        API_CONFIG["radlab_poll_interval_seconds"],
+        _radlab_failure_backoff,
+    )
+    if not force and now_mono - _radlab_last_attempt < wait_for:
+        return False
+
+    _radlab_last_attempt = now_mono
+
+    try:
+        url = _radlab_query_url()
+        payload, _headers = http_get_json(url)
+        rows = _radlab_rows(payload)
+
+        parsed_rows = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+
+            timestamp_value = _row_value(row, "timestamp")
+            rate_value = _row_value(row, "dose_equivalent_rate")
+            if timestamp_value is None or rate_value is None:
+                continue
+
+            try:
+                timestamp = parse_timestamp(timestamp_value)
+                dose_rate = float(rate_value)
+            except (ValueError, TypeError, OverflowError):
+                continue
+
+            if not math.isfinite(dose_rate) or dose_rate < 0:
+                continue
+
+            latitude = _row_value(row, "latitude")
+            longitude = _row_value(row, "longitude")
+            altitude = _row_value(row, "altitude")
+            instrument_id = _row_value(row, "instrument_id")
+
+            parsed_rows.append({
+                "timestamp": timestamp,
+                "dose_rate": dose_rate,
+                "latitude": _optional_float(latitude),
+                "longitude": _optional_float(longitude),
+                "altitude_km": _optional_float(altitude),
+                "instrument_id": instrument_id,
+            })
+
+        parsed_rows.sort(key=lambda item: item["timestamp"])
+
+        new_count = 0
+        for sample in parsed_rows:
+            timestamp_key = sample["timestamp"].isoformat()
+            if timestamp_key in _radlab_seen_timestamps:
+                continue
+
+            _radlab_seen_timestamps.add(timestamp_key)
+            # Do not include archived exposure from before this program session.
+            if sample["timestamp"] < _radiation_session_start:
+                continue
+            _integrate_dose_sample(
+                sample["timestamp"],
+                sample["dose_rate"],
+            )
+
+            radiation_dosimetry_data.update({
+                "dose_rate_usv_h": sample["dose_rate"],
+                "last_measurement_timestamp": timestamp_key,
+                "last_measurement_latitude": sample["latitude"],
+                "last_measurement_longitude": sample["longitude"],
+                "last_measurement_altitude_km": sample["altitude_km"],
+                "instrument_id": sample["instrument_id"],
+                "measurement_count": (
+                    radiation_dosimetry_data["measurement_count"] + 1
+                ),
+                "measurement_status": "HISTORICAL_MEASUREMENT",
+            })
+            new_count += 1
+
+        radiation_dosimetry_data["last_api_update"] = iso_utc()
+        radiation_dosimetry_data["last_error"] = None
+
+        if not parsed_rows:
+            radiation_dosimetry_data["measurement_status"] = (
+                "NO_MEASUREMENTS_IN_QUERY_WINDOW"
+            )
+        elif new_count == 0:
+            radiation_dosimetry_data["measurement_status"] = (
+                "NO_NEW_MEASUREMENTS"
+            )
+
+        _radlab_failure_backoff = 0.0
+        return True
+
+    except HTTPError as exc:
+        retry_after = retry_after_seconds(exc.headers)
+        _radlab_failure_backoff = min(
+            21600.0,
+            max(300.0, retry_after or _radlab_failure_backoff * 2.0),
+        )
+        radiation_dosimetry_data["measurement_status"] = (
+            "STALE" if radiation_dosimetry_data["last_measurement_timestamp"]
+            else "ERROR"
+        )
+        radiation_dosimetry_data["last_error"] = api_error_message(exc)
+        return False
+
+    except (URLError, TimeoutError, OSError, ValueError, TypeError,
+            json.JSONDecodeError) as exc:
+        _radlab_failure_backoff = min(
+            21600.0, max(300.0, _radlab_failure_backoff * 2.0)
+        )
+        radiation_dosimetry_data["measurement_status"] = (
+            "STALE" if radiation_dosimetry_data["last_measurement_timestamp"]
+            else "ERROR"
+        )
+        radiation_dosimetry_data["last_error"] = api_error_message(exc)
+        return False
+
+
+def _optional_float(value):
+    if value in (None, "", "NA", "NaN", "nan"):
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
 
 
 # ============================================================
@@ -552,6 +987,9 @@ data = {
     "physiological_data": physiological_data,
     "environmental_data": environmental_data,
     "system_data": system_data,
+    "iss_position_data": iss_position_data,
+    "space_weather_data": space_weather_data,
+    "radiation_dosimetry_data": radiation_dosimetry_data,
 }
 
 
@@ -559,22 +997,17 @@ data = {
 # MAIN REFRESH FUNCTION
 # ============================================================
 
-def refresh_data():
+def refresh_data(include_remote=True):
     """
-    Advance simulation and publish values when their
-    individual sampling intervals have elapsed.
-
-    Existing dictionary references remain valid.
+    Advance simulation and update remote data only when their own
+    polling intervals are due. API polling never runs at ECG frequency.
     """
-
-    global _last_state_update
-    global _last_environment_update
+    global _last_state_update, _last_environment_update
 
     validate_mode()
     validate_profile()
 
     now = time.monotonic()
-
     physiological_dt = now - _last_state_update
     environmental_dt = now - _last_environment_update
 
@@ -584,125 +1017,70 @@ def refresh_data():
     _last_state_update = now
     _last_environment_update = now
 
-    # --------------------------------------------------------
-    # Physiological sampling
-    # --------------------------------------------------------
-
     physiological_source = {
         "heart_rate": round(_state["heart_rate"], 1),
-
-        "systolic_bp": round(
-            clamp(_state["systolic_bp"], 90, 119), 1
-        ),
-
-        "diastolic_bp": round(
-            clamp(_state["diastolic_bp"], 60, 79), 1
-        ),
-
+        "systolic_bp": round(clamp(_state["systolic_bp"], 90, 119), 1),
+        "diastolic_bp": round(clamp(_state["diastolic_bp"], 60, 79), 1),
         "heart_rate_variability": round(
             _state["heart_rate_variability"], 1
         ),
-
-        "respiratory_rate": round(
-            _state["respiratory_rate"], 1
-        ),
-
-        "spo2": round(
-            clamp(_state["spo2"], 97, 100), 1
-        ),
-
+        "respiratory_rate": round(_state["respiratory_rate"], 1),
+        "spo2": round(clamp(_state["spo2"], 97, 100), 1),
         "body_temperature": round(
             clamp(_state["body_temperature"], 36.1, 37.2), 2
         ),
-
-        "skin_temperature": round(
-            _state["skin_temperature"], 2
-        ),
-
-        "blood_glucose": round(
-            _state["blood_glucose"], 1
-        ),
-
-        "stress_level": round(
-            _state["stress_level"], 1
-        ),
-
+        "skin_temperature": round(_state["skin_temperature"], 2),
+        "blood_glucose": round(_state["blood_glucose"], 1),
+        "stress_level": round(_state["stress_level"], 1),
         "sleep_duration": _state["sleep_duration"],
         "sleep_quality": round(_state["sleep_quality"], 1),
-
-        "physical_activity": round(
-            _state["physical_activity"], 1
-        ),
-
+        "physical_activity": round(_state["physical_activity"], 1),
         "body_mass": ASTRONAUT_PROFILE["body_mass"],
-
-        "hydration_level": round(
-            _state["hydration_level"], 1
-        ),
+        "hydration_level": round(_state["hydration_level"], 1),
     }
 
-    publish_due_values(
-        physiological_data,
-        physiological_source,
-        now
-    )
-
-    # --------------------------------------------------------
-    # Environmental sampling
-    # --------------------------------------------------------
+    publish_due_values(physiological_data, physiological_source, now)
 
     environmental_source = {
         "cabin_temperature": round(
             _environment_state["cabin_temperature"], 2
         ),
-
-        "cabin_pressure": round(
-            _environment_state["cabin_pressure"], 2
-        ),
-
-        "cabin_humidity": round(
-            _environment_state["cabin_humidity"], 1
-        ),
-
-        "cabin_oxygen": round(
-            _environment_state["cabin_oxygen"], 2
-        ),
-
-        "cabin_co2": round(
-            _environment_state["cabin_co2"], 1
-        ),
-
-        "radiation_dose_rate_usv_h": round(
-            _environment_state["radiation_dose_rate_usv_h"], 3
-        ),
-
+        "cabin_pressure": round(_environment_state["cabin_pressure"], 2),
+        "cabin_humidity": round(_environment_state["cabin_humidity"], 1),
+        "cabin_oxygen": round(_environment_state["cabin_oxygen"], 2),
+        "cabin_co2": round(_environment_state["cabin_co2"], 1),
         "microgravity_level": round(
             _environment_state["microgravity_level"], 6
         ),
-
         "cabin_air_quality": round(
             _environment_state["cabin_air_quality"], 1
         ),
     }
 
-    publish_due_values(
-        environmental_data,
-        environmental_source,
-        now
+    publish_due_values(environmental_data, environmental_source, now)
+
+    # The legacy field is retained for consumers, but is no longer
+    # filled with a fabricated radiation rate.
+    environmental_data["radiation_dose_rate_usv_h"] = (
+        radiation_dosimetry_data["dose_rate_usv_h"]
     )
 
-    # --------------------------------------------------------
-    # System information
-    # --------------------------------------------------------
+    # Independent, cached API polling. Disabled during module import.
+    if include_remote:
+        update_iss_position()
+        update_space_weather()
+        update_radiation_measurements()
 
     system_data.update({
-        "timestamp": datetime.now(
-            timezone.utc
-        ).isoformat(),
-
+        "timestamp": iso_utc(),
         "simulation_mode": SIMULATION_MODE,
         "data_source": "SIMULATED",
         "ecg_sample_rate_hz": ECG_SAMPLE_RATE_HZ,
+        "api_status": {
+            "iss_position": iss_position_data["status"],
+            "nasa_donki": space_weather_data["status"],
+            "nasa_radlab": radiation_dosimetry_data["measurement_status"],
+        },
     })
 
     return data
@@ -713,14 +1091,23 @@ def refresh_data():
 # ============================================================
 
 def generate_snapshot():
-    """Return a copy of the latest published data."""
-
+    """Return copies of all currently published data."""
     refresh_data()
 
     return {
         "physiological_data": dict(physiological_data),
         "environmental_data": dict(environmental_data),
         "system_data": dict(system_data),
+        "iss_position_data": dict(iss_position_data),
+        "space_weather_data": {
+            **space_weather_data,
+            "sep_events": list(space_weather_data["sep_events"]),
+            "cme_events": list(space_weather_data["cme_events"]),
+            "geomagnetic_storms": list(
+                space_weather_data["geomagnetic_storms"]
+            ),
+        },
+        "radiation_dosimetry_data": dict(radiation_dosimetry_data),
     }
 
 
@@ -728,4 +1115,5 @@ def generate_snapshot():
 # INITIALIZATION
 # ============================================================
 
-refresh_data()
+# Initialize local simulation values without making network requests.
+refresh_data(include_remote=False)
