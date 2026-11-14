@@ -1,6 +1,7 @@
+
 """
 Astronaut Health Data Shuffler
-Version: 1.3.5
+Version: 1.4.0
 
 Continuous, time-based synthetic physiological simulation with:
 - Current ISS position (Where the ISS at? API)
@@ -31,7 +32,6 @@ from urllib.request import Request, urlopen
 SIMULATION_MODE = "NORMAL"
 SUPPORTED_MODES = ("NORMAL", "REST", "EXERCISE", "SLEEP", "ABNORMAL")
 
-# Abnormalities are synthetic test scenarios, not medical diagnoses.
 SUPPORTED_ABNORMALITIES = (
     "HYPERGLYCEMIA",
     "HYPOGLYCEMIA",
@@ -45,7 +45,6 @@ SUPPORTED_ABNORMALITIES = (
     "HYPOTENSION",
 )
 
-# Mutually exclusive scenario pairs cannot be enabled together.
 _ABNORMALITY_CONFLICTS = (
     frozenset(("HYPERGLYCEMIA", "HYPOGLYCEMIA")),
     frozenset(("TACHYCARDIA", "BRADYCARDIA")),
@@ -56,7 +55,6 @@ _ABNORMALITY_CONFLICTS = (
 _active_abnormalities = ()
 _abnormality_targets = {}
 
-
 ECG_SAMPLE_RATE_HZ = 500
 
 ASTRONAUT_PROFILE = {
@@ -66,10 +64,7 @@ ASTRONAUT_PROFILE = {
     "baseline_skin_temp": 34.5,
 }
 
-# All intervals are seconds. API polling is intentionally independent
-# from physiological sampling and ECG sampling.
 UPDATE_INTERVALS = {
-    # Physiological
     "heart_rate": 1.0,
     "systolic_bp": 60.0,
     "diastolic_bp": 60.0,
@@ -86,7 +81,6 @@ UPDATE_INTERVALS = {
     "body_mass": 3600.0,
     "hydration_level": 60.0,
 
-    # Environmental
     "cabin_temperature": 5.0,
     "cabin_pressure": 1.0,
     "cabin_humidity": 5.0,
@@ -96,16 +90,13 @@ UPDATE_INTERVALS = {
     "cabin_air_quality": 10.0,
 }
 
-
-# Metadata describes the synthetic signal and its units. Metrics whose
-# measurement definition/context is incomplete are explicitly marked so
-# downstream health logic can decide whether they are assessable.
 MEASUREMENT_INFO = {
     "heart_rate": {"unit": "bpm", "definition": "Heart rate"},
     "systolic_bp": {"unit": "mmHg", "definition": "Systolic blood pressure"},
     "diastolic_bp": {"unit": "mmHg", "definition": "Diastolic blood pressure"},
     "heart_rate_variability": {
-        "unit": "ms", "definition": "Synthetic HRV value; SDNN/RMSSD method is not specified",
+        "unit": "ms",
+        "definition": "Synthetic HRV value; SDNN/RMSSD method is not specified",
         "interpretation_ready": False,
     },
     "respiratory_rate": {"unit": "breaths/min", "definition": "Respiratory rate"},
@@ -113,47 +104,54 @@ MEASUREMENT_INFO = {
     "body_temperature": {"unit": "°C", "definition": "Simulated core body temperature"},
     "skin_temperature": {"unit": "°C", "definition": "Simulated skin temperature"},
     "blood_glucose": {
-        "unit": "mg/dL", "definition": "Synthetic blood glucose concentration",
+        "unit": "mg/dL",
+        "definition": "Synthetic blood glucose concentration",
         "context": "Meal timing and fasting status are not modelled",
         "interpretation_ready": False,
     },
     "stress_level": {
-        "unit": "index", "definition": "Synthetic relative stress index (0-100)",
+        "unit": "index",
+        "definition": "Synthetic relative stress index (0-100)",
         "interpretation_ready": False,
     },
     "sleep_duration": {"unit": "h", "definition": "Accumulated simulated sleep duration"},
     "sleep_quality": {
-        "unit": "index", "definition": "Synthetic sleep quality index (0-100)",
+        "unit": "index",
+        "definition": "Synthetic sleep quality index (0-100)",
         "interpretation_ready": False,
     },
     "physical_activity": {
-        "unit": "simulation_index", "definition": "Synthetic activity index (0-25); not MET",
+        "unit": "simulation_index",
+        "definition": "Synthetic activity index (0-25); not MET",
         "interpretation_ready": False,
     },
     "body_mass": {"unit": "kg", "definition": "Configured astronaut body mass"},
     "hydration_level": {
-        "unit": "index", "definition": "Synthetic hydration index (0-100); not a direct clinical measurement",
+        "unit": "index",
+        "definition": "Synthetic hydration index (0-100); not a direct clinical measurement",
         "interpretation_ready": False,
     },
     "cabin_temperature": {"unit": "°C", "definition": "Simulated cabin air temperature"},
     "cabin_pressure": {"unit": "kPa", "definition": "Simulated cabin pressure"},
     "cabin_humidity": {"unit": "%", "definition": "Simulated relative humidity"},
     "cabin_oxygen": {
-        "unit": "%", "definition": "Simulated oxygen fraction by volume; not oxygen partial pressure",
+        "unit": "%",
+        "definition": "Simulated oxygen fraction by volume; not oxygen partial pressure",
         "interpretation_ready": False,
     },
     "cabin_co2": {"unit": "ppm", "definition": "Simulated cabin carbon dioxide concentration"},
     "microgravity_level": {
-        "unit": "simulation_index", "definition": "Synthetic microgravity index; not measured acceleration",
+        "unit": "simulation_index",
+        "definition": "Synthetic microgravity index; not measured acceleration",
         "interpretation_ready": False,
     },
     "cabin_air_quality": {
-        "unit": "index", "definition": "Synthetic air quality index (0-100)",
+        "unit": "index",
+        "definition": "Synthetic air quality index (0-100)",
         "interpretation_ready": False,
     },
 }
 
-# Per-field metadata is updated only when that field is actually published.
 measurement_metadata = {}
 
 API_CONFIG = {
@@ -167,17 +165,17 @@ API_CONFIG = {
     "radlab_url": "https://visualization.osdr.nasa.gov/radlab/api/",
     "radlab_poll_interval_seconds": 3600.0,
     "radlab_lookback_hours": 24,
-    # Do not integrate across large gaps: doing so would invent exposure.
     "radlab_max_integration_gap_seconds": 21600.0,
 
     "http_timeout_seconds": 12.0,
-    "user_agent": "AstronautHealthDataShuffler/1.3.5",
+    "user_agent": "AstronautHealthDataShuffler/1.4.0",
     "api_keys_file": "api_keys.json",
+
+    # FastAPI backend used by the interactive terminal client.
+    "backend_base_url": "http://127.0.0.1:8080",
+    "backend_timeout_seconds": 5.0,
 }
 
-# NASA API default is 1,000 requests/hour per key; DEMO_KEY is
-# substantially more restrictive. This client deliberately makes
-# only three DONKI requests per 15-minute refresh cycle.
 NASA_DONKI_ENDPOINTS = ("SEP", "CME", "GST")
 
 
@@ -223,20 +221,14 @@ def validate_mode():
 
 
 def set_simulation_scenario(mode="NORMAL", abnormalities=None):
-    """Select NORMAL/REST/EXERCISE/SLEEP or one/more ABNORMAL test cases.
-
-    Examples:
-        set_simulation_scenario("NORMAL")
-        set_simulation_scenario("SLEEP")
-        set_simulation_scenario("ABNORMAL", ["TACHYCARDIA", "HYPERGLYCEMIA"])
-
-    Scenario labels describe generated test data; they are not diagnoses.
-    """
+    """Select a simulation mode or one/more synthetic abnormal test cases."""
     global SIMULATION_MODE, _active_abnormalities, _abnormality_targets
 
     if not isinstance(mode, str):
         raise TypeError("mode must be a string.")
+
     mode = mode.strip().upper()
+
     if mode not in SUPPORTED_MODES:
         raise ValueError(f"Unsupported simulation mode: {mode}")
 
@@ -245,25 +237,37 @@ def set_simulation_scenario(mode="NORMAL", abnormalities=None):
     elif isinstance(abnormalities, str):
         selected = (abnormalities.strip().upper(),)
     else:
-        selected = tuple(str(item).strip().upper() for item in abnormalities)
+        try:
+            selected = tuple(
+                str(item).strip().upper() for item in abnormalities
+            )
+        except TypeError as exc:
+            raise TypeError("abnormalities must be an iterable of names.") from exc
 
     if len(set(selected)) != len(selected):
         raise ValueError("Duplicate abnormalities are not allowed.")
+
     unknown = sorted(set(selected) - set(SUPPORTED_ABNORMALITIES))
     if unknown:
         raise ValueError(f"Unsupported abnormality: {', '.join(unknown)}")
+
     if mode == "ABNORMAL" and not selected:
         raise ValueError("ABNORMAL mode requires at least one abnormality.")
+
     if mode != "ABNORMAL" and selected:
         raise ValueError("abnormalities must only be supplied in ABNORMAL mode.")
 
     selected_set = set(selected)
+
     for conflict in _ABNORMALITY_CONFLICTS:
         if conflict.issubset(selected_set):
-            raise ValueError("Conflicting abnormalities cannot be combined: "
-                             + " / ".join(sorted(conflict)))
+            raise ValueError(
+                "Conflicting abnormalities cannot be combined: "
+                + " / ".join(sorted(conflict))
+            )
 
     targets = {}
+
     for item in selected:
         if item == "HYPERGLYCEMIA":
             targets["blood_glucose"] = random_value(145, 170, 1)
@@ -292,9 +296,6 @@ def set_simulation_scenario(mode="NORMAL", abnormalities=None):
     _active_abnormalities = selected
     _abnormality_targets = targets
 
-    # A newly selected abnormal test case should be visible in the very
-    # next snapshot, rather than waiting for the previous sampling interval.
-    # The injected scenario is a controlled test-state change, not a diagnosis.
     for key, target in targets.items():
         _state[key] = target
         _last_publish.pop(key, None)
@@ -363,17 +364,7 @@ def parse_timestamp(value):
 # ============================================================
 
 def load_api_keys():
-    """
-    Load secrets from api_keys.json, located beside this Python file.
-
-    Expected format:
-    {
-        "nasa_api_key": "YOUR_NASA_API_KEY"
-    }
-
-    The file is optional. Without it, NASA requests are skipped instead
-    of silently falling back to the heavily rate-limited DEMO_KEY.
-    """
+    """Load NASA API credentials from api_keys.json beside this file."""
     config_path = Path(__file__).resolve().parent / API_CONFIG["api_keys_file"]
 
     if not config_path.is_file():
@@ -389,6 +380,7 @@ def load_api_keys():
         return {}, "API key file must contain a JSON object."
 
     nasa_key = keys.get("nasa_api_key")
+
     if nasa_key is not None:
         if not isinstance(nasa_key, str) or not nasa_key.strip():
             return {}, "nasa_api_key must be a non-empty string."
@@ -422,7 +414,7 @@ def http_get_json(url, params=None):
 
     with urlopen(
         request,
-        timeout=API_CONFIG["http_timeout_seconds"]
+        timeout=API_CONFIG["http_timeout_seconds"],
     ) as response:
         payload = response.read()
         decoded = payload.decode("utf-8")
@@ -435,6 +427,7 @@ def retry_after_seconds(headers):
         return None
 
     value = headers.get("Retry-After") or headers.get("retry-after")
+
     if not value:
         return None
 
@@ -510,6 +503,7 @@ def advance_physiological_state(dt):
     dt = min(dt, 5.0)
 
     activity = _state["physical_activity"]
+
     activity_targets = {
         "NORMAL": 5.0,
         "REST": 1.5,
@@ -517,6 +511,7 @@ def advance_physiological_state(dt):
         "SLEEP": 0.5,
         "ABNORMAL": 5.0,
     }
+
     activity_target = activity_targets[SIMULATION_MODE]
     activity += random.gauss(0, 0.35 * math.sqrt(dt))
     activity += (activity_target - activity) * dt / 20.0
@@ -524,6 +519,7 @@ def advance_physiological_state(dt):
     _state["physical_activity"] = activity
 
     sleep_quality = _state["sleep_quality"]
+
     target_stress = (
         12.0
         + (90.0 - sleep_quality) * 0.4
@@ -570,21 +566,25 @@ def advance_physiological_state(dt):
         - stress * 0.45
         - activity * 0.25
     )
+
     _state["heart_rate_variability"] = smooth_value(
         _state["heart_rate_variability"], target_hrv, dt, 20.0
     )
 
     target_rr = 13.0 + activity * 0.1 + stress * 0.025
+
     _state["respiratory_rate"] = smooth_value(
         _state["respiratory_rate"], target_rr, dt, 5.0
     )
 
     target_spo2 = 98.5 - max(0, stress - 25) * 0.015
+
     _state["spo2"] = smooth_value(
         _state["spo2"], target_spo2, dt, 8.0
     )
 
     target_temp = 36.6 + activity * 0.004 + stress * 0.001
+
     _state["body_temperature"] = smooth_value(
         _state["body_temperature"], target_temp, dt, 60.0
     )
@@ -592,11 +592,13 @@ def advance_physiological_state(dt):
     target_skin_temp = (
         ASTRONAUT_PROFILE["baseline_skin_temp"] + activity * 0.01
     )
+
     _state["skin_temperature"] = smooth_value(
         _state["skin_temperature"], target_skin_temp, dt, 20.0
     )
 
     target_glucose = 90.0 + stress * 0.12 - activity * 0.08
+
     _state["blood_glucose"] = smooth_value(
         _state["blood_glucose"], target_glucose, dt, 120.0
     )
@@ -629,7 +631,7 @@ def advance_environmental_state(dt):
 
 
 def apply_scenario_overrides(dt):
-    """Move selected synthetic measurements toward safe test-case targets."""
+    """Move selected synthetic measurements toward test-case targets."""
     if SIMULATION_MODE == "ABNORMAL":
         time_constants = {
             "heart_rate": 12.0,
@@ -640,14 +642,21 @@ def apply_scenario_overrides(dt):
             "systolic_bp": 25.0,
             "diastolic_bp": 25.0,
         }
+
         for key, target in _abnormality_targets.items():
             current = _state[key]
             _state[key] = smooth_value(
-                current, target, dt, time_constants.get(key, 20.0)
+                current,
+                target,
+                dt,
+                time_constants.get(key, 20.0),
             )
 
     if SIMULATION_MODE == "SLEEP":
-        _state["sleep_duration"] = min(12.0, _state["sleep_duration"] + dt / 3600.0)
+        _state["sleep_duration"] = min(
+            12.0,
+            _state["sleep_duration"] + dt / 3600.0,
+        )
 
 
 # ============================================================
@@ -661,16 +670,22 @@ def publish_due_values(target, source, now):
             continue
 
         last_time = _last_publish.get(key)
+
         if last_time is None or now - last_time >= interval:
             target[key] = source[key]
             _last_publish[key] = now
+
             info = MEASUREMENT_INFO.get(key, {})
+
             measurement_metadata[key] = {
                 "measured_at": iso_utc(),
                 "unit": info.get("unit", "unknown"),
                 "definition": info.get("definition", ""),
-                "interpretation_ready": info.get("interpretation_ready", True),
+                "interpretation_ready": info.get(
+                    "interpretation_ready", True
+                ),
             }
+
             if "context" in info:
                 measurement_metadata[key]["context"] = info["context"]
 
@@ -695,19 +710,20 @@ def _generate_ecg_point(phase):
     s_wave = -0.25 * _circular_gaussian(phase, 0.325, 0.010)
     t_wave = 0.30 * _circular_gaussian(phase, 0.55, 0.050)
     noise = random.gauss(0, 0.005)
+
     return p_wave + q_wave + r_wave + s_wave + t_wave + noise
 
 
 def get_ecg_samples(sample_count=25):
     """
     Generate ECG samples at 500 Hz.
-    A sample_count of 25 represents 50 ms of signal.
     Output values are millivolts (mV), not diagnostic ECG data.
     """
     global _ecg_phase
 
     if isinstance(sample_count, bool) or not isinstance(sample_count, int):
         raise TypeError("sample_count must be an integer.")
+
     if not 1 <= sample_count <= 5000:
         raise ValueError("sample_count must be between 1 and 5000.")
 
@@ -748,11 +764,13 @@ def update_iss_position(force=False):
     global _iss_last_attempt, _iss_failure_backoff
 
     now_mono = time.monotonic()
+
     if not force:
         wait_for = max(
             API_CONFIG["iss_poll_interval_seconds"],
             _iss_failure_backoff,
         )
+
         if now_mono - _iss_last_attempt < wait_for:
             return False
 
@@ -762,7 +780,10 @@ def update_iss_position(force=False):
         payload, _headers = http_get_json(API_CONFIG["iss_position_url"])
 
         required = ("latitude", "longitude", "altitude", "timestamp")
-        if not isinstance(payload, dict) or any(k not in payload for k in required):
+
+        if not isinstance(payload, dict) or any(
+            key not in payload for key in required
+        ):
             raise ValueError("ISS API response is missing required fields.")
 
         latitude = float(payload["latitude"])
@@ -776,6 +797,7 @@ def update_iss_position(force=False):
         validate_number("ISS timestamp", timestamp, 0, 10000000000)
 
         velocity = payload.get("velocity")
+
         if velocity is not None:
             velocity = float(velocity)
             validate_number("ISS velocity", velocity, 0, 100000)
@@ -786,7 +808,9 @@ def update_iss_position(force=False):
             "altitude_km": altitude,
             "velocity_km_h": velocity,
             "visibility": payload.get("visibility"),
-            "timestamp": iso_utc(datetime.fromtimestamp(timestamp, timezone.utc)),
+            "timestamp": iso_utc(
+                datetime.fromtimestamp(timestamp, timezone.utc)
+            ),
             "last_api_update": iso_utc(),
             "status": "OK",
             "last_error": None,
@@ -795,14 +819,25 @@ def update_iss_position(force=False):
         _iss_failure_backoff = 0.0
         return True
 
-    except (HTTPError, URLError, TimeoutError, OSError, ValueError,
-            TypeError, json.JSONDecodeError) as exc:
-        iss_position_data["status"] = "STALE" if iss_position_data["timestamp"] else "ERROR"
+    except (
+        HTTPError,
+        URLError,
+        TimeoutError,
+        OSError,
+        ValueError,
+        TypeError,
+        json.JSONDecodeError,
+    ) as exc:
+        iss_position_data["status"] = (
+            "STALE" if iss_position_data["timestamp"] else "ERROR"
+        )
         iss_position_data["last_error"] = api_error_message(exc)
+
         _iss_failure_backoff = min(
             300.0,
             max(30.0, _iss_failure_backoff * 2.0),
         )
+
         return False
 
 
@@ -831,19 +866,16 @@ def _donki_date_range():
     start_date = end_date - timedelta(
         days=API_CONFIG["nasa_donki_lookback_days"]
     )
+
     return start_date.isoformat(), end_date.isoformat()
 
 
 def update_space_weather(force=False):
-    """
-    Fetch SEP, CME and GST event context from NASA DONKI.
-
-    This is not a radiation dosimeter. DONKI event records are not
-    converted into dose-rate values.
-    """
+    """Fetch SEP, CME and GST event context from NASA DONKI."""
     global _donki_last_attempt, _donki_failure_backoff
 
     nasa_key = _api_keys.get("nasa_api_key")
+
     if not nasa_key:
         space_weather_data["status"] = "DISABLED_NO_API_KEY"
         space_weather_data["last_error"] = (
@@ -852,14 +884,17 @@ def update_space_weather(force=False):
         return False
 
     now_mono = time.monotonic()
+
     wait_for = max(
         API_CONFIG["nasa_donki_poll_interval_seconds"],
         _donki_failure_backoff,
     )
+
     if not force and now_mono - _donki_last_attempt < wait_for:
         return False
 
     _donki_last_attempt = now_mono
+
     start_date, end_date = _donki_date_range()
     fetched = {}
     latest_rate_limit = None
@@ -867,7 +902,10 @@ def update_space_weather(force=False):
 
     try:
         for event_type in NASA_DONKI_ENDPOINTS:
-            url = f"{API_CONFIG['nasa_donki_base_url']}/{event_type}"
+            url = (
+                f"{API_CONFIG['nasa_donki_base_url']}/{event_type}"
+            )
+
             payload, headers = http_get_json(
                 url,
                 {
@@ -878,21 +916,24 @@ def update_space_weather(force=False):
             )
 
             if not isinstance(payload, list):
-                raise ValueError(f"DONKI {event_type} response was not a list.")
+                raise ValueError(
+                    f"DONKI {event_type} response was not a list."
+                )
 
             fetched[event_type] = payload
+
             latest_rate_limit = (
                 headers.get("X-RateLimit-Limit")
                 or headers.get("x-ratelimit-limit")
                 or latest_rate_limit
             )
+
             latest_rate_remaining = (
                 headers.get("X-RateLimit-Remaining")
                 or headers.get("x-ratelimit-remaining")
                 or latest_rate_remaining
             )
 
-        # Replace event snapshots only after all three requests succeed.
         space_weather_data.update({
             "sep_events": fetched["SEP"],
             "cme_events": fetched["CME"],
@@ -903,32 +944,49 @@ def update_space_weather(force=False):
             "api_rate_limit": latest_rate_limit,
             "api_rate_remaining": latest_rate_remaining,
         })
+
         _donki_failure_backoff = 0.0
         return True
 
     except HTTPError as exc:
         retry_after = retry_after_seconds(exc.headers)
+
         if retry_after is not None:
-            _donki_failure_backoff = min(3600.0, max(60.0, retry_after))
+            _donki_failure_backoff = min(
+                3600.0,
+                max(60.0, retry_after),
+            )
         else:
             _donki_failure_backoff = min(
-                3600.0, max(60.0, _donki_failure_backoff * 2.0)
+                3600.0,
+                max(60.0, _donki_failure_backoff * 2.0),
             )
+
         space_weather_data["status"] = (
             "STALE" if space_weather_data["last_api_update"] else "ERROR"
         )
         space_weather_data["last_error"] = api_error_message(exc)
+
         return False
 
-    except (URLError, TimeoutError, OSError, ValueError, TypeError,
-            json.JSONDecodeError) as exc:
+    except (
+        URLError,
+        TimeoutError,
+        OSError,
+        ValueError,
+        TypeError,
+        json.JSONDecodeError,
+    ) as exc:
         _donki_failure_backoff = min(
-            3600.0, max(60.0, _donki_failure_backoff * 2.0)
+            3600.0,
+            max(60.0, _donki_failure_backoff * 2.0),
         )
+
         space_weather_data["status"] = (
             "STALE" if space_weather_data["last_api_update"] else "ERROR"
         )
         space_weather_data["last_error"] = api_error_message(exc)
+
         return False
 
 
@@ -964,13 +1022,11 @@ _radiation_session_start = utc_now()
 
 
 def _radlab_query_url():
-    """
-    Request the latest historical ISS dose-equivalent-rate records.
-    RadLab returns archived measurements, not a live telemetry stream.
-    """
+    """Build a query for recent historical ISS dose-rate records."""
     since = utc_now() - timedelta(
         hours=API_CONFIG["radlab_lookback_hours"]
     )
+
     since_text = since.strftime("%Y-%m-%dT%H:%M")
 
     params = [
@@ -982,49 +1038,63 @@ def _radlab_query_url():
         ("altitude", ""),
         ("format", "json"),
     ]
+
     return API_CONFIG["radlab_url"] + "?" + urlencode(params)
 
 
 def _radlab_rows(payload):
-    """Normalize common JSON response shapes into a list of row dictionaries."""
+    """Normalize common JSON response shapes into row dictionaries."""
     if isinstance(payload, list):
         return payload
 
     if isinstance(payload, dict):
         for key in ("data", "results", "rows", "records"):
             value = payload.get(key)
+
             if isinstance(value, list):
                 return value
 
-        # Column-oriented JSON can be returned by tabular services.
-        if payload and all(isinstance(value, list) for value in payload.values()):
+        if payload and all(
+            isinstance(value, list) for value in payload.values()
+        ):
             columns = list(payload.keys())
-            lengths = {len(payload[column]) for column in columns}
+            lengths = {
+                len(payload[column]) for column in columns
+            }
+
             if len(lengths) == 1:
+                row_count = next(iter(lengths), 0)
+
                 return [
-                    {column: payload[column][index] for column in columns}
-                    for index in range(next(iter(lengths), 0))
+                    {
+                        column: payload[column][index]
+                        for column in columns
+                    }
+                    for index in range(row_count)
                 ]
 
-    raise ValueError("Unrecognized RadLab JSON response structure.")
+    raise ValueError(
+        "Unrecognized RadLab JSON response structure."
+    )
 
 
 def _row_value(row, *names):
-    lowered = {str(key).lower(): value for key, value in row.items()}
+    lowered = {
+        str(key).lower(): value
+        for key, value in row.items()
+    }
+
     for name in names:
         value = lowered.get(name.lower())
+
         if value not in (None, "", "NA", "NaN", "nan"):
             return value
+
     return None
 
 
 def _integrate_dose_sample(timestamp, dose_rate):
-    """
-    Trapezoidal integration of dose-equivalent rate.
-
-    dose_rate is μSv/hour; elapsed seconds are converted to hours.
-    Large gaps are deliberately not integrated, avoiding fabricated dose.
-    """
+    """Integrate dose rate using the trapezoidal rule."""
     global _radlab_previous_sample
 
     current = (timestamp, dose_rate)
@@ -1032,24 +1102,39 @@ def _integrate_dose_sample(timestamp, dose_rate):
 
     if previous is None:
         _radlab_previous_sample = current
-        radiation_dosimetry_data["integration_status"] = "WAITING_FOR_NEXT_SAMPLE"
+        radiation_dosimetry_data["integration_status"] = (
+            "WAITING_FOR_NEXT_SAMPLE"
+        )
         return
 
     previous_timestamp, previous_rate = previous
-    elapsed_seconds = (timestamp - previous_timestamp).total_seconds()
+
+    elapsed_seconds = (
+        timestamp - previous_timestamp
+    ).total_seconds()
 
     if elapsed_seconds <= 0:
         return
 
-    if elapsed_seconds <= API_CONFIG["radlab_max_integration_gap_seconds"]:
+    if elapsed_seconds <= API_CONFIG[
+        "radlab_max_integration_gap_seconds"
+    ]:
         average_rate = (previous_rate + dose_rate) / 2.0
-        dose_increment_usv = average_rate * (elapsed_seconds / 3600.0)
 
-        radiation_dosimetry_data["cumulative_dose_usv"] += dose_increment_usv
+        dose_increment_usv = (
+            average_rate * (elapsed_seconds / 3600.0)
+        )
+
+        radiation_dosimetry_data["cumulative_dose_usv"] += (
+            dose_increment_usv
+        )
+
         radiation_dosimetry_data["cumulative_dose_msv"] = (
             radiation_dosimetry_data["cumulative_dose_usv"] / 1000.0
         )
+
         radiation_dosimetry_data["integration_status"] = "INTEGRATING"
+
     else:
         radiation_dosimetry_data["integration_status"] = (
             "GAP_NOT_INTEGRATED"
@@ -1059,19 +1144,16 @@ def _integrate_dose_sample(timestamp, dose_rate):
 
 
 def update_radiation_measurements(force=False):
-    """
-    Retrieve archived ISS dose-equivalent-rate records from NASA RadLab.
-
-    Only new, timestamped records are processed. Repeated polling therefore
-    does not double-count the same measurement.
-    """
+    """Retrieve archived ISS dose-rate records from NASA RadLab."""
     global _radlab_last_attempt, _radlab_failure_backoff
 
     now_mono = time.monotonic()
+
     wait_for = max(
         API_CONFIG["radlab_poll_interval_seconds"],
         _radlab_failure_backoff,
     )
+
     if not force and now_mono - _radlab_last_attempt < wait_for:
         return False
 
@@ -1083,12 +1165,14 @@ def update_radiation_measurements(force=False):
         rows = _radlab_rows(payload)
 
         parsed_rows = []
+
         for row in rows:
             if not isinstance(row, dict):
                 continue
 
             timestamp_value = _row_value(row, "timestamp")
             rate_value = _row_value(row, "dose_equivalent_rate")
+
             if timestamp_value is None or rate_value is None:
                 continue
 
@@ -1115,18 +1199,23 @@ def update_radiation_measurements(force=False):
                 "instrument_id": instrument_id,
             })
 
-        parsed_rows.sort(key=lambda item: item["timestamp"])
+        parsed_rows.sort(
+            key=lambda item: item["timestamp"]
+        )
 
         new_count = 0
+
         for sample in parsed_rows:
             timestamp_key = sample["timestamp"].isoformat()
+
             if timestamp_key in _radlab_seen_timestamps:
                 continue
 
             _radlab_seen_timestamps.add(timestamp_key)
-            # Do not include archived exposure from before this program session.
+
             if sample["timestamp"] < _radiation_session_start:
                 continue
+
             _integrate_dose_sample(
                 sample["timestamp"],
                 sample["dose_rate"],
@@ -1143,8 +1232,11 @@ def update_radiation_measurements(force=False):
                     radiation_dosimetry_data["measurement_count"] + 1
                 ),
                 "measurement_status": "HISTORICAL_MEASUREMENT",
-                "measurement_temporality": "HISTORICAL_ARCHIVE_NOT_LIVE_TELEMETRY",
+                "measurement_temporality": (
+                    "HISTORICAL_ARCHIVE_NOT_LIVE_TELEMETRY"
+                ),
             })
+
             new_count += 1
 
         radiation_dosimetry_data["last_api_update"] = iso_utc()
@@ -1164,37 +1256,58 @@ def update_radiation_measurements(force=False):
 
     except HTTPError as exc:
         retry_after = retry_after_seconds(exc.headers)
+
         _radlab_failure_backoff = min(
             21600.0,
-            max(300.0, retry_after or _radlab_failure_backoff * 2.0),
+            max(
+                300.0,
+                retry_after or _radlab_failure_backoff * 2.0,
+            ),
         )
+
         radiation_dosimetry_data["measurement_status"] = (
-            "STALE" if radiation_dosimetry_data["last_measurement_timestamp"]
+            "STALE"
+            if radiation_dosimetry_data["last_measurement_timestamp"]
             else "ERROR"
         )
+
         radiation_dosimetry_data["last_error"] = api_error_message(exc)
+
         return False
 
-    except (URLError, TimeoutError, OSError, ValueError, TypeError,
-            json.JSONDecodeError) as exc:
+    except (
+        URLError,
+        TimeoutError,
+        OSError,
+        ValueError,
+        TypeError,
+        json.JSONDecodeError,
+    ) as exc:
         _radlab_failure_backoff = min(
-            21600.0, max(300.0, _radlab_failure_backoff * 2.0)
+            21600.0,
+            max(300.0, _radlab_failure_backoff * 2.0),
         )
+
         radiation_dosimetry_data["measurement_status"] = (
-            "STALE" if radiation_dosimetry_data["last_measurement_timestamp"]
+            "STALE"
+            if radiation_dosimetry_data["last_measurement_timestamp"]
             else "ERROR"
         )
+
         radiation_dosimetry_data["last_error"] = api_error_message(exc)
+
         return False
 
 
 def _optional_float(value):
     if value in (None, "", "NA", "NaN", "nan"):
         return None
+
     try:
         result = float(value)
     except (TypeError, ValueError):
         return None
+
     return result if math.isfinite(result) else None
 
 
@@ -1222,16 +1335,14 @@ data = {
 # ============================================================
 
 def refresh_data(include_remote=True):
-    """
-    Advance simulation and update remote data only when their own
-    polling intervals are due. API polling never runs at ECG frequency.
-    """
+    """Advance simulation and update remote data when due."""
     global _last_state_update, _last_environment_update
 
     validate_mode()
     validate_profile()
 
     now = time.monotonic()
+
     physiological_dt = now - _last_state_update
     environmental_dt = now - _last_environment_update
 
@@ -1244,36 +1355,68 @@ def refresh_data(include_remote=True):
 
     physiological_source = {
         "heart_rate": round(_state["heart_rate"], 1),
-        "systolic_bp": round(clamp(_state["systolic_bp"], 80, 160), 1),
-        "diastolic_bp": round(clamp(_state["diastolic_bp"], 45, 100), 1),
+        "systolic_bp": round(
+            clamp(_state["systolic_bp"], 80, 160), 1
+        ),
+        "diastolic_bp": round(
+            clamp(_state["diastolic_bp"], 45, 100), 1
+        ),
         "heart_rate_variability": round(
             _state["heart_rate_variability"], 1
         ),
-        "respiratory_rate": round(_state["respiratory_rate"], 1),
-        "spo2": round(clamp(_state["spo2"], 90, 100), 1),
+        "respiratory_rate": round(
+            _state["respiratory_rate"], 1
+        ),
+        "spo2": round(
+            clamp(_state["spo2"], 90, 100), 1
+        ),
         "body_temperature": round(
             clamp(_state["body_temperature"], 34.0, 39.0), 2
         ),
-        "skin_temperature": round(_state["skin_temperature"], 2),
-        "blood_glucose": round(_state["blood_glucose"], 1),
-        "stress_level": round(_state["stress_level"], 1),
+        "skin_temperature": round(
+            _state["skin_temperature"], 2
+        ),
+        "blood_glucose": round(
+            _state["blood_glucose"], 1
+        ),
+        "stress_level": round(
+            _state["stress_level"], 1
+        ),
         "sleep_duration": _state["sleep_duration"],
-        "sleep_quality": round(_state["sleep_quality"], 1),
-        "physical_activity": round(_state["physical_activity"], 1),
+        "sleep_quality": round(
+            _state["sleep_quality"], 1
+        ),
+        "physical_activity": round(
+            _state["physical_activity"], 1
+        ),
         "body_mass": ASTRONAUT_PROFILE["body_mass"],
-        "hydration_level": round(_state["hydration_level"], 1),
+        "hydration_level": round(
+            _state["hydration_level"], 1
+        ),
     }
 
-    publish_due_values(physiological_data, physiological_source, now)
+    publish_due_values(
+        physiological_data,
+        physiological_source,
+        now,
+    )
 
     environmental_source = {
         "cabin_temperature": round(
             _environment_state["cabin_temperature"], 2
         ),
-        "cabin_pressure": round(_environment_state["cabin_pressure"], 2),
-        "cabin_humidity": round(_environment_state["cabin_humidity"], 1),
-        "cabin_oxygen": round(_environment_state["cabin_oxygen"], 2),
-        "cabin_co2": round(_environment_state["cabin_co2"], 1),
+        "cabin_pressure": round(
+            _environment_state["cabin_pressure"], 2
+        ),
+        "cabin_humidity": round(
+            _environment_state["cabin_humidity"], 1
+        ),
+        "cabin_oxygen": round(
+            _environment_state["cabin_oxygen"], 2
+        ),
+        "cabin_co2": round(
+            _environment_state["cabin_co2"], 1
+        ),
         "microgravity_level": round(
             _environment_state["microgravity_level"], 6
         ),
@@ -1282,23 +1425,32 @@ def refresh_data(include_remote=True):
         ),
     }
 
-    publish_due_values(environmental_data, environmental_source, now)
+    publish_due_values(
+        environmental_data,
+        environmental_source,
+        now,
+    )
 
-    # The legacy field is retained for consumers, but is no longer
-    # filled with a fabricated radiation rate.
     environmental_data["radiation_dose_rate_usv_h"] = (
         radiation_dosimetry_data["dose_rate_usv_h"]
     )
+
     if radiation_dosimetry_data["last_measurement_timestamp"]:
         measurement_metadata["radiation_dose_rate_usv_h"] = {
-            "measured_at": radiation_dosimetry_data["last_measurement_timestamp"],
+            "measured_at": (
+                radiation_dosimetry_data["last_measurement_timestamp"]
+            ),
             "unit": "µSv/hour",
-            "definition": "NASA OSDR RadLab historical dose-equivalent rate; not live telemetry",
+            "definition": (
+                "NASA OSDR RadLab historical dose-equivalent rate; "
+                "not live telemetry"
+            ),
             "interpretation_ready": False,
-            "data_temporality": "HISTORICAL_ARCHIVE_NOT_LIVE_TELEMETRY",
+            "data_temporality": (
+                "HISTORICAL_ARCHIVE_NOT_LIVE_TELEMETRY"
+            ),
         }
 
-    # Independent, cached API polling. Disabled during module import.
     if include_remote:
         update_iss_position()
         update_space_weather()
@@ -1342,9 +1494,12 @@ def generate_snapshot():
                 space_weather_data["geomagnetic_storms"]
             ),
         },
-        "radiation_dosimetry_data": dict(radiation_dosimetry_data),
+        "radiation_dosimetry_data": dict(
+            radiation_dosimetry_data
+        ),
         "measurement_metadata": {
-            key: dict(value) for key, value in measurement_metadata.items()
+            key: dict(value)
+            for key, value in measurement_metadata.items()
         },
     }
 
@@ -1353,7 +1508,6 @@ def generate_snapshot():
 # INITIALIZATION
 # ============================================================
 
-# Initialize local simulation values without making network requests.
 refresh_data(include_remote=False)
 
 
@@ -1361,8 +1515,88 @@ refresh_data(include_remote=False)
 # INTERACTIVE SIMULATION CLIENT
 # ============================================================
 
+def _backend_url(endpoint):
+    """Build a URL for the running FastAPI backend."""
+    base_url = API_CONFIG["backend_base_url"].rstrip("/")
+    return f"{base_url}{endpoint}"
+
+
+def _backend_get(endpoint):
+    """Retrieve JSON data from the FastAPI backend."""
+    request = Request(
+        _backend_url(endpoint),
+        headers={"Accept": "application/json"},
+        method="GET",
+    )
+
+    try:
+        with urlopen(
+            request,
+            timeout=API_CONFIG["backend_timeout_seconds"],
+        ) as response:
+            payload = response.read().decode("utf-8")
+            return json.loads(payload)
+
+    except HTTPError as exc:
+        details = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"Backend returned HTTP {exc.code}: {details}"
+        ) from exc
+
+    except (URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError(
+            "Could not connect to the FastAPI backend. "
+            "Make sure main.py is running."
+        ) from exc
+
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            "Backend returned an invalid JSON response."
+        ) from exc
+
+
+def _backend_post(endpoint, payload):
+    """Send a JSON POST request to the FastAPI backend."""
+    encoded_payload = json.dumps(payload).encode("utf-8")
+
+    request = Request(
+        _backend_url(endpoint),
+        data=encoded_payload,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urlopen(
+            request,
+            timeout=API_CONFIG["backend_timeout_seconds"],
+        ) as response:
+            body = response.read().decode("utf-8")
+            return json.loads(body)
+
+    except HTTPError as exc:
+        details = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"Backend returned HTTP {exc.code}: {details}"
+        ) from exc
+
+    except (URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError(
+            "Could not connect to the FastAPI backend. "
+            "Make sure main.py is running."
+        ) from exc
+
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            "Backend returned an invalid JSON response."
+        ) from exc
+
+
 def _print_client_help():
-    """Display commands accepted by the interactive simulation client."""
+    """Display commands accepted by the interactive client."""
     print("\nAvailable commands:")
     print("  normal                 Start normal simulation")
     print("  rest                   Switch to rest mode")
@@ -1372,17 +1606,25 @@ def _print_client_help():
     print("                         Example: abnormal bradycardia")
     print("                         Multiple: abnormal bradycardia, hypoxemia")
     print("  status                 Show the active simulation scenario")
-    print("  snapshot               Print the latest generated data as JSON")
+    print("  snapshot               Retrieve the latest dashboard data")
     print("  help                   Show this help")
-    print("  exit                   Stop the simulation client\n")
+    print("  exit                   Stop the client\n")
+
     print("Abnormality names:")
-    print("  " + ", ".join(name.lower() for name in SUPPORTED_ABNORMALITIES))
+    print(
+        "  "
+        + ", ".join(
+            name.lower()
+            for name in SUPPORTED_ABNORMALITIES
+        )
+    )
     print()
 
 
 def _parse_client_command(command):
     """Parse a client command and return (mode, abnormalities)."""
     parts = command.strip().split(maxsplit=1)
+
     if not parts:
         return None
 
@@ -1390,7 +1632,10 @@ def _parse_client_command(command):
 
     if action in ("normal", "rest", "exercise", "sleep"):
         if len(parts) != 1:
-            raise ValueError(f"'{action}' does not accept an additional argument.")
+            raise ValueError(
+                f"'{action}' does not accept an additional argument."
+            )
+
         return action.upper(), None
 
     if action == "abnormal":
@@ -1399,106 +1644,163 @@ def _parse_client_command(command):
                 "Usage: abnormal <condition> "
                 "(example: abnormal bradycardia)"
             )
+
         abnormalities = [
             item.strip().upper().replace("-", "_").replace(" ", "_")
             for item in parts[1].split(",")
             if item.strip()
         ]
+
         if not abnormalities:
-            raise ValueError("At least one abnormality must be specified.")
+            raise ValueError(
+                "At least one abnormality must be specified."
+            )
+
         return "ABNORMAL", abnormalities
 
-    return action, None
+    return action.upper(), None
 
 
-def _simulation_worker(stop_event, interval_seconds=1.0):
-    """Keep synthetic measurements advancing while the client accepts commands."""
-    while not stop_event.is_set():
-        try:
-            refresh_data(include_remote=True)
-        except Exception as exc:
-            # Keep the interactive client alive; expose the error to the console.
-            print(f"\n[SIMULATION ERROR] {exc}")
-        stop_event.wait(interval_seconds)
+def _send_scenario_command(mode, abnormalities=None):
+    """Change the active scenario through the FastAPI backend."""
+    payload = {
+        "mode": mode,
+        "abnormalities": abnormalities or [],
+    }
+
+    return _backend_post(
+        "/api/v1/scenario",
+        payload,
+    )
+
+
+def _show_backend_status():
+    """Retrieve the current scenario from the FastAPI backend."""
+    result = _backend_get("/api/v1/scenario")
+
+    print(
+        json.dumps(
+            result,
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
+
+
+def _show_backend_snapshot():
+    """Retrieve the latest dashboard data from the FastAPI backend."""
+    result = _backend_get("/api/v1/dashboard")
+
+    print(
+        json.dumps(
+            result,
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
 
 
 def run_client():
-    """Run the interactive command-line client; not started when imported."""
-    stop_event = threading.Event()
-    worker = threading.Thread(
-        target=_simulation_worker,
-        args=(stop_event,),
-        name="shuffler-simulation",
-        daemon=True,
-    )
+    """
+    Run the interactive terminal client.
 
+    The FastAPI backend owns the simulation state.
+    This client only sends commands and retrieves backend data.
+    """
     print("=" * 58)
     print("ASTRONAUT HEALTH DATA SHUFFLER — CLIENT v1.3.5")
     print("=" * 58)
-    print("Starting in NORMAL mode. Synthetic data generation is active.")
-    print("Type 'help' to see commands or 'exit' to stop.\n")
-
-    # Explicitly establish the documented default scenario.
-    set_simulation_scenario("NORMAL")
-    worker.start()
+    print(
+        f"Connecting to backend: "
+        f"{API_CONFIG['backend_base_url']}"
+    )
 
     try:
-        while True:
-            try:
-                command = input("shuffler> ").strip()
-            except EOFError:
-                print()
-                break
+        scenario = _backend_get("/api/v1/scenario")
 
-            if not command:
+    except RuntimeError as exc:
+        print(f"\n[CONNECTION ERROR] {exc}")
+        print(
+            "\nStart the backend first by running "
+            "'python main.py' from the healthProc directory."
+        )
+        return
+
+    print("[CONNECTED] FastAPI backend is available.")
+
+    print(
+        f"Active mode: {scenario.get('mode', 'UNKNOWN')} | "
+        f"Abnormalities: "
+        f"{', '.join(scenario.get('abnormalities', [])) or 'none'}"
+    )
+
+    print("\nType 'help' to see available commands.\n")
+
+    while True:
+        try:
+            command = input("shuffler> ").strip()
+
+        except EOFError:
+            print()
+            break
+
+        except KeyboardInterrupt:
+            print("\nInterrupt received.")
+            break
+
+        if not command:
+            continue
+
+        try:
+            parsed = _parse_client_command(command)
+
+            if parsed is None:
                 continue
 
-            try:
-                parsed = _parse_client_command(command)
-                if parsed is None:
-                    continue
+            action, abnormalities = parsed
 
-                action, abnormalities = parsed
+            if action == "HELP":
+                _print_client_help()
 
-                if action == "HELP":
-                    _print_client_help()
-                elif action == "STATUS":
-                    scenario = get_simulation_scenario()
-                    print(
-                        f"Active mode: {scenario['mode']} | "
-                        f"Abnormalities: "
-                        f"{', '.join(scenario['abnormalities']) or 'none'}"
-                    )
-                elif action == "SNAPSHOT":
-                    snapshot = generate_snapshot()
-                    print(json.dumps(snapshot, indent=2, ensure_ascii=False))
-                elif action in ("EXIT", "QUIT"):
-                    break
-                elif action in SUPPORTED_MODES:
-                    scenario = set_simulation_scenario(
-                        action, abnormalities=abnormalities
-                    )
-                    print(
-                        f"[ACTIVE] Mode: {scenario['mode']} | "
-                        f"Abnormalities: "
-                        f"{', '.join(scenario['abnormalities']) or 'none'}"
-                    )
-                else:
-                    print(
-                        "Unknown command. Type 'help' to see available commands."
-                    )
+            elif action == "STATUS":
+                _show_backend_status()
 
-            except (TypeError, ValueError) as exc:
-                print(f"[INVALID COMMAND] {exc}")
+            elif action == "SNAPSHOT":
+                _show_backend_snapshot()
 
-    except KeyboardInterrupt:
-        print("\nInterrupt received.")
-    finally:
-        stop_event.set()
-        worker.join(timeout=2.0)
-        print("Simulation client stopped.")
+            elif action in ("EXIT", "QUIT"):
+                break
+
+            elif action in SUPPORTED_MODES:
+                result = _send_scenario_command(
+                    action,
+                    abnormalities,
+                )
+
+                print("\n[SCENARIO UPDATED]")
+
+                print(
+                    json.dumps(
+                        result,
+                        indent=2,
+                        ensure_ascii=False,
+                    )
+                )
+
+            else:
+                print(
+                    "Unknown command. "
+                    "Type 'help' to see available commands."
+                )
+
+        except (TypeError, ValueError) as exc:
+            print(f"[INVALID COMMAND] {exc}")
+
+        except RuntimeError as exc:
+            print(f"[BACKEND ERROR] {exc}")
+
+    print("Shuffler client stopped.")
 
 
 if __name__ == "__main__":
     run_client()
-    
