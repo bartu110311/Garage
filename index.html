@@ -1,78 +1,91 @@
 <!DOCTYPE html>
 <html lang="tr">
     <head>
+        <meta charset="UTF-8">
         <title>
             NASA SPACE HEALTH PROGRAM
         </title>
     </head>
-    <main>
-        <button id="hex" aria-expanded="false" aria-controls="menu" aria-label="Ana menü"></button>
-            <nav id="menu" inert>
-                <button class="monitoring"  id="heart">
-                    Kalp
-                </button>
-                <button class="monitoring"  id="bone">
-                    Kemik
-                </button>
-                <button class="monitoring"  id="sleep">
-                    Uyku
-                </button>
-                <button class="monitoring"  id="cancer">
-                    Kanser Riski
-                </button>
-                <button class="psych"  id="stabilite">
-                    Sağlamlık
-                </button>
-                <button class="psych"  id="actions">
-                    Davranışlar
-                </button>
-                <button class="psych"  id="tiredness">
-                    Yorgunluk
-                </button>
-                <button class="bio"  id="bacteria">
-                    Bakteriler
-                </button>
-                <button class="bio"  id="immunity">
-                    Bağışıklık
-                </button>
-                <button class="bio"  id="diseases">
-                    Hastalıklar
-                </button>
-                <button class="radiation"  id="active-radiation">
-                    Aktif Radyasyon Riski
-                </button>
-                <button class="workout"  id="activities">
-                    Aktiviteler
-                </button>
-                <button class="workout"  id="sport-rate">
-                    Spor Oranı
-                </button>
-                <button class="input"  id="standart-input">
-                    Klasik Veri Girdisi
-                </button>
-                <button class="team"  id="teammates">
-                    Takım Arkadaşları
-                </button>
-                <button class="procedure"  id="learn">
-                    Acil Durumlarla İlgili Öğren
-                </button>
-                <button class="procedure"  id="standart-procedure">
-                    Standart Prosedürler
-                </button>
-                <button class="procedure"  id="emergency">
-                    Acil Durum Prosedürleri
-                </button>
-            </nav>
-            <div class="info">
-                <h2 id="title">
-                    BAŞLIK
-                </h2>
-                <p id="info1">
-                    BİLGİ 1
-                </p>
-                <p id="info2">
-                    BİLGİ 2
-                </p>
-            </div>
-    </main>
+    <body>
+        <main>
+                <button id="hex" aria-expanded="false" aria-controls="menu" aria-label="Ana menü"></button>
+                    <nav id="menu" inert>
+                        <section data-group="monitoring">
+                            <button class="monitoring"  id="heart">
+                                Kalp
+                            </button>
+                            <button class="monitoring"  id="bone">
+                                Kemik
+                            </button>
+                            <button class="monitoring"  id="sleep">
+                                Uyku
+                            </button>
+                            <button class="monitoring"  id="cancer">
+                                Kanser Riski
+                            </button>
+                        </section>
+                        <section data-group="psych">
+                            <button class="psych"  id="stabilite">
+                                Sağlamlık
+                            </button>
+                            <button class="psych"  id="actions">
+                                Davranışlar
+                            </button>
+                            <button class="psych"  id="tiredness">
+                                Yorgunluk
+                            </button>
+                        </section>
+                        <section data-group="bio">
+                            <button class="bio"  id="bacteria">
+                                Bakteriler
+                            </button>
+                            <button class="bio"  id="immunity">
+                                Bağışıklık
+                            </button>
+                            <button class="bio"  id="diseases">
+                                Hastalıklar
+                            </button>
+                        </section>
+                        <button class="radiation"  id="active-radiation">
+                            Aktif Radyasyon Riski
+                        </button>
+                        <section data-group="workout">
+                            <button class="workout"  id="activities">
+                                Aktiviteler
+                            </button>
+                            <button class="workout"  id="sport-rate">
+                                Spor Oranı
+                            </button>
+                        </section>
+                        <button class="input"  id="standart-input">
+                            Klasik Veri Girdisi
+                        </button>
+                        <button class="team"  id="teammates">
+                            Takım Arkadaşları
+                        </button>
+                        <section data-group="procedure">
+                            <button class="procedure"  id="learn">
+                                Acil Durumlarla İlgili Öğren
+                            </button>
+                            <button class="procedure"  id="standart-procedure">
+                                Standart Prosedürler
+                            </button>
+                            <button class="procedure"  id="emergency">
+                                Acil Durum Prosedürleri
+                            </button>
+                        </section>
+                    </nav>
+                <div class="info">
+                    <h2 id="title">
+                        BAŞLIK
+                    </h2>
+                    <p id="info1">
+                        BİLGİ 1
+                    </p>
+                    <p id="info2">
+                        BİLGİ 2
+                    </p>
+                </div>
+        </main>
+    </body>
 </html>
