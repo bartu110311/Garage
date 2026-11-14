@@ -1,91 +1,94 @@
 <!DOCTYPE html>
 <html lang="tr">
-    <head>
-        <meta charset="UTF-8">
-        <title>
-            NASA SPACE HEALTH PROGRAM
-        </title>
-    </head>
-    <body>
-        <main>
-                <button id="hex" aria-expanded="false" aria-controls="menu" aria-label="Ana menü"></button>
-                    <nav id="menu" inert>
-                        <section data-group="monitoring">
-                            <button class="monitoring"  id="heart">
-                                Kalp
-                            </button>
-                            <button class="monitoring"  id="bone">
-                                Kemik
-                            </button>
-                            <button class="monitoring"  id="sleep">
-                                Uyku
-                            </button>
-                            <button class="monitoring"  id="cancer">
-                                Kanser Riski
-                            </button>
-                        </section>
-                        <section data-group="psych">
-                            <button class="psych"  id="stabilite">
-                                Sağlamlık
-                            </button>
-                            <button class="psych"  id="actions">
-                                Davranışlar
-                            </button>
-                            <button class="psych"  id="tiredness">
-                                Yorgunluk
-                            </button>
-                        </section>
-                        <section data-group="bio">
-                            <button class="bio"  id="bacteria">
-                                Bakteriler
-                            </button>
-                            <button class="bio"  id="immunity">
-                                Bağışıklık
-                            </button>
-                            <button class="bio"  id="diseases">
-                                Hastalıklar
-                            </button>
-                        </section>
-                        <button class="radiation"  id="active-radiation">
-                            Aktif Radyasyon Riski
-                        </button>
-                        <section data-group="workout">
-                            <button class="workout"  id="activities">
-                                Aktiviteler
-                            </button>
-                            <button class="workout"  id="sport-rate">
-                                Spor Oranı
-                            </button>
-                        </section>
-                        <button class="input"  id="standart-input">
-                            Klasik Veri Girdisi
-                        </button>
-                        <button class="team"  id="teammates">
-                            Takım Arkadaşları
-                        </button>
-                        <section data-group="procedure">
-                            <button class="procedure"  id="learn">
-                                Acil Durumlarla İlgili Öğren
-                            </button>
-                            <button class="procedure"  id="standart-procedure">
-                                Standart Prosedürler
-                            </button>
-                            <button class="procedure"  id="emergency">
-                                Acil Durum Prosedürleri
-                            </button>
-                        </section>
-                    </nav>
-                <div class="info">
-                    <h2 id="title">
-                        BAŞLIK
-                    </h2>
-                    <p id="info1">
-                        BİLGİ 1
-                    </p>
-                    <p id="info2">
-                        BİLGİ 2
-                    </p>
-                </div>
-        </main>
-    </body>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Astronot Sağlık İzleme Sistemi - NASA Space Apps</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <!-- Sol Üst Altıgen Ana Menü Butonu -->
+    <button id="hexagon-btn" title="Ana Menü">⬡</button>
+
+    <!-- Sağ Üst Altıgen İptal Butonu (Sadece Menü Açıkken Görünür) -->
+    <button id="cancel-menu-btn" title="İptal">✕</button>
+
+    <!-- Ana Ekran Konteyneri -->
+    <main class="dashboard-container">
+        
+        <!-- Sol Taraf: Dinamik Sol Panel (Başlangıçta Fotoğraf Çerçevesi) -->
+        <section class="left-section" id="left-section">
+            <div class="photo-frame" id="initial-photo">
+                <img src="/481975394_1311642796741301_4408107372293563832_n.jpg" alt="Kişisel Fotoğraf Çerçevesi">
+            </div>
+        </section>
+
+        <!-- Sağ Taraf: Öncelikli Bilgi Penceresi -->
+        <section class="info-section">
+            <div class="info-panel" id="info-panel">
+                <h1 id="panel-title">Welcome</h1>
+                <p id="panel-desc">More detail bla bla bla</p>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Uygulama Çekmecesi / Radial Menü -->
+    <nav id="menu" inert>
+        <!-- Arka Plan Yarı Saydam Çeyrek Daire Halkaları -->
+        <div class="arc-ring ring-pink"></div>
+        <div class="arc-ring ring-red"></div>
+        <div class="arc-ring ring-purple"></div>
+        <div class="arc-ring ring-blue"></div>
+        <div class="arc-ring ring-green"></div>
+
+        <!-- 20 Slotluk Uygulama Butonları -->
+        <div class="menu-items-wrapper">
+            
+            <!-- Ring 1: Pink (Workout - 2) -->
+            <div class="ring-group" data-ring="0">
+                <button class="app-btn workout" id="activities">Aktiviteler</button>
+                <button class="app-btn workout" id="sport-rate">Spor Oranı</button>
+            </div>
+
+            <!-- Ring 2: Red (Psych - 3) -->
+            <div class="ring-group" data-ring="1">
+                <button class="app-btn psych" id="stabilite">Sağlamlık</button>
+                <button class="app-btn psych" id="actions">Davranışlar</button>
+                <button class="app-btn psych" id="tiredness">Yorgunluk</button>
+            </div>
+
+            <!-- Ring 3: Purple (Input:1, Bio:3, Team:1 = 5) -->
+            <div class="ring-group" data-ring="2">
+                <button class="app-btn input" id="standart-input">Klasik Veri</button>
+                <button class="app-btn bio" id="bacteria">Bakteriler</button>
+                <button class="app-btn bio" id="immunity">Bağışıklık</button>
+                <button class="app-btn bio" id="diseases">Hastalıklar</button>
+                <button class="app-btn input" id="settings">Ayarlar</button>
+            </div>
+
+            <!-- Ring 4: Blue (Monitoring:4, Radiation:1, Empty:1 = 6) -->
+            <div class="ring-group" data-ring="3">
+                <button class="app-btn monitoring" id="heart">Kalp</button>
+                <button class="app-btn monitoring" id="bone">Kemik</button>
+                <button class="app-btn monitoring" id="sleep">Uyku</button>
+                <button class="app-btn monitoring" id="cancer">Kanser Riski</button>
+                <button class="app-btn radiation" id="active-radiation">Radyasyon</button>
+                <button class="app-btn team" id="teammates">Takım</button>
+            </div>
+
+            <!-- Ring 5: Green (Procedures:3, Empty:1 = 4) -->
+            <div class="ring-group" data-ring="4">
+                <button class="app-btn procedure" id="learn">Acil Öğren</button>
+                <button class="app-btn procedure" id="standart-procedure">Prosedürler</button>
+                <button class="app-btn procedure" id="emergency">Acil Durum</button>
+                <button class="app-btn empty" disabled style="opacity: 0.3; cursor: default;">Boş</button>
+            </div>
+
+        </div>
+    </nav>
+    <div id="notif-stack" aria-live="polite"></div>
+    <script src="script.js"></script>
+</body>
 </html>
