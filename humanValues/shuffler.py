@@ -1,6 +1,6 @@
 """
 Astronaut Health Data Shuffler
-Version: 1.2.0
+Version: 1.3.0
 
 Continuous, time-based synthetic physiological simulation with:
 - Current ISS position (Where the ISS at? API)
@@ -28,7 +28,33 @@ from urllib.request import Request, urlopen
 # ============================================================
 
 SIMULATION_MODE = "NORMAL"
-SUPPORTED_MODES = ("NORMAL",)
+SUPPORTED_MODES = ("NORMAL", "REST", "EXERCISE", "SLEEP", "ABNORMAL")
+
+# Abnormalities are synthetic test scenarios, not medical diagnoses.
+SUPPORTED_ABNORMALITIES = (
+    "HYPERGLYCEMIA",
+    "HYPOGLYCEMIA",
+    "TACHYCARDIA",
+    "BRADYCARDIA",
+    "HYPOTHERMIA",
+    "FEVER",
+    "HYPOXEMIA",
+    "TACHYPNEA",
+    "HYPERTENSION",
+    "HYPOTENSION",
+)
+
+# Mutually exclusive scenario pairs cannot be enabled together.
+_ABNORMALITY_CONFLICTS = (
+    frozenset(("HYPERGLYCEMIA", "HYPOGLYCEMIA")),
+    frozenset(("TACHYCARDIA", "BRADYCARDIA")),
+    frozenset(("HYPOTHERMIA", "FEVER")),
+    frozenset(("HYPERTENSION", "HYPOTENSION")),
+)
+
+_active_abnormalities = ()
+_abnormality_targets = {}
+
 
 ECG_SAMPLE_RATE_HZ = 500
 
@@ -68,6 +94,66 @@ UPDATE_INTERVALS = {
     "microgravity_level": 0.1,
     "cabin_air_quality": 10.0,
 }
+
+
+# Metadata describes the synthetic signal and its units. Metrics whose
+# measurement definition/context is incomplete are explicitly marked so
+# downstream health logic can decide whether they are assessable.
+MEASUREMENT_INFO = {
+    "heart_rate": {"unit": "bpm", "definition": "Heart rate"},
+    "systolic_bp": {"unit": "mmHg", "definition": "Systolic blood pressure"},
+    "diastolic_bp": {"unit": "mmHg", "definition": "Diastolic blood pressure"},
+    "heart_rate_variability": {
+        "unit": "ms", "definition": "Synthetic HRV value; SDNN/RMSSD method is not specified",
+        "interpretation_ready": False,
+    },
+    "respiratory_rate": {"unit": "breaths/min", "definition": "Respiratory rate"},
+    "spo2": {"unit": "%", "definition": "Peripheral oxygen saturation (simulated)"},
+    "body_temperature": {"unit": "°C", "definition": "Simulated core body temperature"},
+    "skin_temperature": {"unit": "°C", "definition": "Simulated skin temperature"},
+    "blood_glucose": {
+        "unit": "mg/dL", "definition": "Synthetic blood glucose concentration",
+        "context": "Meal timing and fasting status are not modelled",
+        "interpretation_ready": False,
+    },
+    "stress_level": {
+        "unit": "index", "definition": "Synthetic relative stress index (0-100)",
+        "interpretation_ready": False,
+    },
+    "sleep_duration": {"unit": "h", "definition": "Accumulated simulated sleep duration"},
+    "sleep_quality": {
+        "unit": "index", "definition": "Synthetic sleep quality index (0-100)",
+        "interpretation_ready": False,
+    },
+    "physical_activity": {
+        "unit": "simulation_index", "definition": "Synthetic activity index (0-25); not MET",
+        "interpretation_ready": False,
+    },
+    "body_mass": {"unit": "kg", "definition": "Configured astronaut body mass"},
+    "hydration_level": {
+        "unit": "index", "definition": "Synthetic hydration index (0-100); not a direct clinical measurement",
+        "interpretation_ready": False,
+    },
+    "cabin_temperature": {"unit": "°C", "definition": "Simulated cabin air temperature"},
+    "cabin_pressure": {"unit": "kPa", "definition": "Simulated cabin pressure"},
+    "cabin_humidity": {"unit": "%", "definition": "Simulated relative humidity"},
+    "cabin_oxygen": {
+        "unit": "%", "definition": "Simulated oxygen fraction by volume; not oxygen partial pressure",
+        "interpretation_ready": False,
+    },
+    "cabin_co2": {"unit": "ppm", "definition": "Simulated cabin carbon dioxide concentration"},
+    "microgravity_level": {
+        "unit": "simulation_index", "definition": "Synthetic microgravity index; not measured acceleration",
+        "interpretation_ready": False,
+    },
+    "cabin_air_quality": {
+        "unit": "index", "definition": "Synthetic air quality index (0-100)",
+        "interpretation_ready": False,
+    },
+}
+
+# Per-field metadata is updated only when that field is actually published.
+measurement_metadata = {}
 
 API_CONFIG = {
     "iss_position_url": "https://api.wheretheiss.at/v1/satellites/25544",
@@ -129,6 +215,99 @@ def validate_mode():
         raise TypeError("SIMULATION_MODE must be a string.")
     if SIMULATION_MODE not in SUPPORTED_MODES:
         raise ValueError(f"Unsupported simulation mode: {SIMULATION_MODE}")
+    if SIMULATION_MODE == "ABNORMAL" and not _active_abnormalities:
+        raise ValueError("ABNORMAL mode requires at least one abnormality.")
+    if SIMULATION_MODE != "ABNORMAL" and _active_abnormalities:
+        raise ValueError("Abnormalities can only be active in ABNORMAL mode.")
+
+
+def set_simulation_scenario(mode="NORMAL", abnormalities=None):
+    """Select NORMAL/REST/EXERCISE/SLEEP or one/more ABNORMAL test cases.
+
+    Examples:
+        set_simulation_scenario("NORMAL")
+        set_simulation_scenario("SLEEP")
+        set_simulation_scenario("ABNORMAL", ["TACHYCARDIA", "HYPERGLYCEMIA"])
+
+    Scenario labels describe generated test data; they are not diagnoses.
+    """
+    global SIMULATION_MODE, _active_abnormalities, _abnormality_targets
+
+    if not isinstance(mode, str):
+        raise TypeError("mode must be a string.")
+    mode = mode.strip().upper()
+    if mode not in SUPPORTED_MODES:
+        raise ValueError(f"Unsupported simulation mode: {mode}")
+
+    if abnormalities is None:
+        selected = ()
+    elif isinstance(abnormalities, str):
+        selected = (abnormalities.strip().upper(),)
+    else:
+        selected = tuple(str(item).strip().upper() for item in abnormalities)
+
+    if len(set(selected)) != len(selected):
+        raise ValueError("Duplicate abnormalities are not allowed.")
+    unknown = sorted(set(selected) - set(SUPPORTED_ABNORMALITIES))
+    if unknown:
+        raise ValueError(f"Unsupported abnormality: {', '.join(unknown)}")
+    if mode == "ABNORMAL" and not selected:
+        raise ValueError("ABNORMAL mode requires at least one abnormality.")
+    if mode != "ABNORMAL" and selected:
+        raise ValueError("abnormalities must only be supplied in ABNORMAL mode.")
+
+    selected_set = set(selected)
+    for conflict in _ABNORMALITY_CONFLICTS:
+        if conflict.issubset(selected_set):
+            raise ValueError("Conflicting abnormalities cannot be combined: "
+                             + " / ".join(sorted(conflict)))
+
+    targets = {}
+    for item in selected:
+        if item == "HYPERGLYCEMIA":
+            targets["blood_glucose"] = random_value(145, 170, 1)
+        elif item == "HYPOGLYCEMIA":
+            targets["blood_glucose"] = random_value(65, 69, 1)
+        elif item == "TACHYCARDIA":
+            targets["heart_rate"] = random_value(105, 115, 1)
+        elif item == "BRADYCARDIA":
+            targets["heart_rate"] = random_value(48, 55, 1)
+        elif item == "HYPOTHERMIA":
+            targets["body_temperature"] = random_value(34.2, 34.8, 2)
+        elif item == "FEVER":
+            targets["body_temperature"] = random_value(37.8, 38.3, 2)
+        elif item == "HYPOXEMIA":
+            targets["spo2"] = random_value(92, 94, 1)
+        elif item == "TACHYPNEA":
+            targets["respiratory_rate"] = random_value(22, 25, 1)
+        elif item == "HYPERTENSION":
+            targets["systolic_bp"] = random_value(130, 145, 1)
+            targets["diastolic_bp"] = random_value(80, 90, 1)
+        elif item == "HYPOTENSION":
+            targets["systolic_bp"] = random_value(90, 99, 1)
+            targets["diastolic_bp"] = random_value(55, 64, 1)
+
+    SIMULATION_MODE = mode
+    _active_abnormalities = selected
+    _abnormality_targets = targets
+
+    # A newly selected abnormal test case should be visible in the very
+    # next snapshot, rather than waiting for the previous sampling interval.
+    # The injected scenario is a controlled test-state change, not a diagnosis.
+    for key, target in targets.items():
+        _state[key] = target
+        _last_publish.pop(key, None)
+
+    return get_simulation_scenario()
+
+
+def get_simulation_scenario():
+    """Return a copy of the currently selected synthetic scenario."""
+    return {
+        "mode": SIMULATION_MODE,
+        "abnormalities": list(_active_abnormalities),
+        "scenario_type": "SYNTHETIC_TEST_DATA",
+    }
 
 
 # ============================================================
@@ -330,8 +509,16 @@ def advance_physiological_state(dt):
     dt = min(dt, 5.0)
 
     activity = _state["physical_activity"]
+    activity_targets = {
+        "NORMAL": 5.0,
+        "REST": 1.5,
+        "EXERCISE": 16.0,
+        "SLEEP": 0.5,
+        "ABNORMAL": 5.0,
+    }
+    activity_target = activity_targets[SIMULATION_MODE]
     activity += random.gauss(0, 0.35 * math.sqrt(dt))
-    activity += (5.0 - activity) * dt / 45.0
+    activity += (activity_target - activity) * dt / 20.0
     activity = clamp(activity, 0, 25)
     _state["physical_activity"] = activity
 
@@ -440,12 +627,34 @@ def advance_environmental_state(dt):
         _environment_state[key] = clamp(current, minimum, maximum)
 
 
+def apply_scenario_overrides(dt):
+    """Move selected synthetic measurements toward safe test-case targets."""
+    if SIMULATION_MODE == "ABNORMAL":
+        time_constants = {
+            "heart_rate": 12.0,
+            "blood_glucose": 90.0,
+            "body_temperature": 45.0,
+            "spo2": 20.0,
+            "respiratory_rate": 12.0,
+            "systolic_bp": 25.0,
+            "diastolic_bp": 25.0,
+        }
+        for key, target in _abnormality_targets.items():
+            current = _state[key]
+            _state[key] = smooth_value(
+                current, target, dt, time_constants.get(key, 20.0)
+            )
+
+    if SIMULATION_MODE == "SLEEP":
+        _state["sleep_duration"] = min(12.0, _state["sleep_duration"] + dt / 3600.0)
+
+
 # ============================================================
 # DATA SAMPLING
 # ============================================================
 
 def publish_due_values(target, source, now):
-    """Publish values only when their individual sampling interval elapsed."""
+    """Publish due values and record the timestamp of each actual update."""
     for key, interval in UPDATE_INTERVALS.items():
         if key not in source:
             continue
@@ -454,6 +663,15 @@ def publish_due_values(target, source, now):
         if last_time is None or now - last_time >= interval:
             target[key] = source[key]
             _last_publish[key] = now
+            info = MEASUREMENT_INFO.get(key, {})
+            measurement_metadata[key] = {
+                "measured_at": iso_utc(),
+                "unit": info.get("unit", "unknown"),
+                "definition": info.get("definition", ""),
+                "interpretation_ready": info.get("interpretation_ready", True),
+            }
+            if "context" in info:
+                measurement_metadata[key]["context"] = info["context"]
 
 
 # ============================================================
@@ -729,6 +947,9 @@ radiation_dosimetry_data = {
     "measurement_count": 0,
     "last_api_update": None,
     "data_source": "NASA OSDR RadLab",
+    "data_temporality": "HISTORICAL_ARCHIVE_NOT_LIVE_TELEMETRY",
+    "dose_rate_unit": "µSv/hour",
+    "cumulative_dose_unit": "µSv",
     "measurement_status": "NO_MEASUREMENTS",
     "integration_status": "NO_DOSE_INTEGRATED",
     "last_error": None,
@@ -921,6 +1142,7 @@ def update_radiation_measurements(force=False):
                     radiation_dosimetry_data["measurement_count"] + 1
                 ),
                 "measurement_status": "HISTORICAL_MEASUREMENT",
+                "measurement_temporality": "HISTORICAL_ARCHIVE_NOT_LIVE_TELEMETRY",
             })
             new_count += 1
 
@@ -990,6 +1212,7 @@ data = {
     "iss_position_data": iss_position_data,
     "space_weather_data": space_weather_data,
     "radiation_dosimetry_data": radiation_dosimetry_data,
+    "measurement_metadata": measurement_metadata,
 }
 
 
@@ -1013,21 +1236,22 @@ def refresh_data(include_remote=True):
 
     advance_physiological_state(physiological_dt)
     advance_environmental_state(environmental_dt)
+    apply_scenario_overrides(physiological_dt)
 
     _last_state_update = now
     _last_environment_update = now
 
     physiological_source = {
         "heart_rate": round(_state["heart_rate"], 1),
-        "systolic_bp": round(clamp(_state["systolic_bp"], 90, 119), 1),
-        "diastolic_bp": round(clamp(_state["diastolic_bp"], 60, 79), 1),
+        "systolic_bp": round(clamp(_state["systolic_bp"], 80, 160), 1),
+        "diastolic_bp": round(clamp(_state["diastolic_bp"], 45, 100), 1),
         "heart_rate_variability": round(
             _state["heart_rate_variability"], 1
         ),
         "respiratory_rate": round(_state["respiratory_rate"], 1),
-        "spo2": round(clamp(_state["spo2"], 97, 100), 1),
+        "spo2": round(clamp(_state["spo2"], 90, 100), 1),
         "body_temperature": round(
-            clamp(_state["body_temperature"], 36.1, 37.2), 2
+            clamp(_state["body_temperature"], 34.0, 39.0), 2
         ),
         "skin_temperature": round(_state["skin_temperature"], 2),
         "blood_glucose": round(_state["blood_glucose"], 1),
@@ -1064,6 +1288,14 @@ def refresh_data(include_remote=True):
     environmental_data["radiation_dose_rate_usv_h"] = (
         radiation_dosimetry_data["dose_rate_usv_h"]
     )
+    if radiation_dosimetry_data["last_measurement_timestamp"]:
+        measurement_metadata["radiation_dose_rate_usv_h"] = {
+            "measured_at": radiation_dosimetry_data["last_measurement_timestamp"],
+            "unit": "µSv/hour",
+            "definition": "NASA OSDR RadLab historical dose-equivalent rate; not live telemetry",
+            "interpretation_ready": False,
+            "data_temporality": "HISTORICAL_ARCHIVE_NOT_LIVE_TELEMETRY",
+        }
 
     # Independent, cached API polling. Disabled during module import.
     if include_remote:
@@ -1074,6 +1306,8 @@ def refresh_data(include_remote=True):
     system_data.update({
         "timestamp": iso_utc(),
         "simulation_mode": SIMULATION_MODE,
+        "active_abnormalities": list(_active_abnormalities),
+        "scenario_type": "SYNTHETIC_TEST_DATA",
         "data_source": "SIMULATED",
         "ecg_sample_rate_hz": ECG_SAMPLE_RATE_HZ,
         "api_status": {
@@ -1108,6 +1342,9 @@ def generate_snapshot():
             ),
         },
         "radiation_dosimetry_data": dict(radiation_dosimetry_data),
+        "measurement_metadata": {
+            key: dict(value) for key, value in measurement_metadata.items()
+        },
     }
 
 
