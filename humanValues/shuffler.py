@@ -1,6 +1,6 @@
 """
 Astronaut Health Data Shuffler
-Version: 1.3.0
+Version: 1.3.5
 
 Continuous, time-based synthetic physiological simulation with:
 - Current ISS position (Where the ISS at? API)
@@ -15,6 +15,7 @@ import json
 import math
 import random
 import time
+import threading
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -170,7 +171,7 @@ API_CONFIG = {
     "radlab_max_integration_gap_seconds": 21600.0,
 
     "http_timeout_seconds": 12.0,
-    "user_agent": "AstronautHealthDataShuffler/1.2.0",
+    "user_agent": "AstronautHealthDataShuffler/1.3.5",
     "api_keys_file": "api_keys.json",
 }
 
@@ -1354,3 +1355,149 @@ def generate_snapshot():
 
 # Initialize local simulation values without making network requests.
 refresh_data(include_remote=False)
+
+
+# ============================================================
+# INTERACTIVE SIMULATION CLIENT
+# ============================================================
+
+def _print_client_help():
+    """Display commands accepted by the interactive simulation client."""
+    print("\nAvailable commands:")
+    print("  normal                 Start normal simulation")
+    print("  rest                   Switch to rest mode")
+    print("  exercise               Switch to exercise mode")
+    print("  sleep                  Switch to sleep mode")
+    print("  abnormal <condition>   Activate an abnormal test scenario")
+    print("                         Example: abnormal bradycardia")
+    print("                         Multiple: abnormal bradycardia, hypoxemia")
+    print("  status                 Show the active simulation scenario")
+    print("  snapshot               Print the latest generated data as JSON")
+    print("  help                   Show this help")
+    print("  exit                   Stop the simulation client\n")
+    print("Abnormality names:")
+    print("  " + ", ".join(name.lower() for name in SUPPORTED_ABNORMALITIES))
+    print()
+
+
+def _parse_client_command(command):
+    """Parse a client command and return (mode, abnormalities)."""
+    parts = command.strip().split(maxsplit=1)
+    if not parts:
+        return None
+
+    action = parts[0].lower()
+
+    if action in ("normal", "rest", "exercise", "sleep"):
+        if len(parts) != 1:
+            raise ValueError(f"'{action}' does not accept an additional argument.")
+        return action.upper(), None
+
+    if action == "abnormal":
+        if len(parts) != 2 or not parts[1].strip():
+            raise ValueError(
+                "Usage: abnormal <condition> "
+                "(example: abnormal bradycardia)"
+            )
+        abnormalities = [
+            item.strip().upper().replace("-", "_").replace(" ", "_")
+            for item in parts[1].split(",")
+            if item.strip()
+        ]
+        if not abnormalities:
+            raise ValueError("At least one abnormality must be specified.")
+        return "ABNORMAL", abnormalities
+
+    return action, None
+
+
+def _simulation_worker(stop_event, interval_seconds=1.0):
+    """Keep synthetic measurements advancing while the client accepts commands."""
+    while not stop_event.is_set():
+        try:
+            refresh_data(include_remote=True)
+        except Exception as exc:
+            # Keep the interactive client alive; expose the error to the console.
+            print(f"\n[SIMULATION ERROR] {exc}")
+        stop_event.wait(interval_seconds)
+
+
+def run_client():
+    """Run the interactive command-line client; not started when imported."""
+    stop_event = threading.Event()
+    worker = threading.Thread(
+        target=_simulation_worker,
+        args=(stop_event,),
+        name="shuffler-simulation",
+        daemon=True,
+    )
+
+    print("=" * 58)
+    print("ASTRONAUT HEALTH DATA SHUFFLER — CLIENT v1.3.5")
+    print("=" * 58)
+    print("Starting in NORMAL mode. Synthetic data generation is active.")
+    print("Type 'help' to see commands or 'exit' to stop.\n")
+
+    # Explicitly establish the documented default scenario.
+    set_simulation_scenario("NORMAL")
+    worker.start()
+
+    try:
+        while True:
+            try:
+                command = input("shuffler> ").strip()
+            except EOFError:
+                print()
+                break
+
+            if not command:
+                continue
+
+            try:
+                parsed = _parse_client_command(command)
+                if parsed is None:
+                    continue
+
+                action, abnormalities = parsed
+
+                if action == "HELP":
+                    _print_client_help()
+                elif action == "STATUS":
+                    scenario = get_simulation_scenario()
+                    print(
+                        f"Active mode: {scenario['mode']} | "
+                        f"Abnormalities: "
+                        f"{', '.join(scenario['abnormalities']) or 'none'}"
+                    )
+                elif action == "SNAPSHOT":
+                    snapshot = generate_snapshot()
+                    print(json.dumps(snapshot, indent=2, ensure_ascii=False))
+                elif action in ("EXIT", "QUIT"):
+                    break
+                elif action in SUPPORTED_MODES:
+                    scenario = set_simulation_scenario(
+                        action, abnormalities=abnormalities
+                    )
+                    print(
+                        f"[ACTIVE] Mode: {scenario['mode']} | "
+                        f"Abnormalities: "
+                        f"{', '.join(scenario['abnormalities']) or 'none'}"
+                    )
+                else:
+                    print(
+                        "Unknown command. Type 'help' to see available commands."
+                    )
+
+            except (TypeError, ValueError) as exc:
+                print(f"[INVALID COMMAND] {exc}")
+
+    except KeyboardInterrupt:
+        print("\nInterrupt received.")
+    finally:
+        stop_event.set()
+        worker.join(timeout=2.0)
+        print("Simulation client stopped.")
+
+
+if __name__ == "__main__":
+    run_client()
