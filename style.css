@@ -17,7 +17,7 @@
     user-select: none;
 }
 
-input, textarea, select {
+/*input, textarea, select {
     -webkit-user-select: auto;
     user-select: auto;
 }
@@ -27,7 +27,7 @@ img {
     user-drag: none;
     pointer-events: none;
 }
-
+*/
 body {
     background-color: var(--bg);
     color: #ffffff;
@@ -425,3 +425,6 @@ body.locked #login-screen {
 body.locked #notif-stack {
     z-index: 2100;
 }
+[data-metric][data-quality="UNKNOWN"]::after { content: " ?"; opacity: .6; }
+[data-metric][data-quality="STALE"]::after   { content: " (eski)"; opacity: .7; }
+[data-metric][data-quality="MISSING"], [data-metric][data-quality="INVALID"] { opacity: .6; }

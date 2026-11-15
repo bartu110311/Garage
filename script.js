@@ -536,6 +536,15 @@ async function fetchCrew() {
         }
     } catch (e) {}
 }
+function updateUIWithTelemetry(data) {
+    lastData = data;
+    clearNotify('conn');
+    document.body.setAttribute('data-system-status', data.overall_status);
+
+    renderActiveConditions(data.active_conditions ?? [], data.overall_status);
+    updateLiveFields(data);
+    updateHomePanel();
+}
 // =====================================================
 // TELEMETRİ OKUMA YAPISI: iç içe JSON → düz anahtar listesi → data-metric
 // =====================================================
