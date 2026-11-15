@@ -627,18 +627,35 @@ function updateLiveFields(data) {
     bindMetrics(leftSection, data);
 
     // Hastalıklar / aktif bulgular listesi
-    const box = document.getElementById('diseases-container');
-    if (box) {
-        const conds = data.active_conditions ?? [];
-        box.innerHTML = conds.length ? conds.map(c => `
-            <div class="data-card" style="flex-direction:column;align-items:flex-start;gap:4px;">
-                <div style="display:flex;justify-content:space-between;width:100%;">
-                    <span style="color:var(--second);">[ ${esc(c.status)} ] ${esc(c.title)}</span>
-                    <strong>${esc(c.observed_value)} ${esc(c.unit)}</strong>
-                </div>
-                <span style="font-size:.85rem;opacity:.8;">${esc(c.context_note ?? c.id)}</span>
-            </div>`).join('')
-            : `<div class="data-card"><span>Tarama Durumu</span><strong>Aktif bulgu yok.</strong></div>`;
+// 7. Hastalıklar / Aktif Bulgular Modülü
+    const diseaseContainer = document.getElementById('diseases-container');
+        if (diseaseContainer) {
+            const conds = data.active_conditions ?? [];
+            if (conds.length > 0) {
+                diseaseContainer.innerHTML = conds.map(c => {
+                    // observed_value nesne mi (örn: tansiyon için) kontrol edelim
+                    let obsValStr = '';
+                    if (c.observed_value != null) {
+                        if (typeof c.observed_value === 'object') {
+                            const vals = Object.values(c.observed_value);
+                            obsValStr = vals.length === 2 ? `${vals[0]} / ${vals[1]}` : JSON.stringify(c.observed_value);
+                        } else {
+                            obsValStr = c.observed_value;
+                        }
+                    }
+
+                    return `
+                    <div class="data-card" style="flex-direction: column; align-items: flex-start; gap: 4px;">
+                        <div style="display: flex; width: 100%; justify-content: space-between;">
+                            <span style="color: var(--second);">[ ${esc(c.status)} ] ${esc(c.title)}</span>
+                            <strong>${esc(obsValStr)} ${esc(c.unit ?? '')}</strong>
+                        </div>
+                        <span style="font-size: 0.85rem; opacity: 0.85;">${esc(c.context_note ?? c.description ?? c.id)}</span>
+                    </div>`;
+                }).join('');
+            } else {
+                diseaseContainer.innerHTML = `<div class="data-card"><span>Tarama Durumu</span><strong>Aktif hastalık / bulgu yok.</strong></div>`;
+            }
     }
 }
 
@@ -664,16 +681,31 @@ function renderActiveConditions(conditions, overallStatus) {
             const level = STATUS_TO_LEVEL[c.status] || 'mid';
             const id = `cond-${c.id}`;
             live.add(id);
+
+            // Observed_value nesne mi (örn: tansiyon için {systolic, diastolic}) yoksa düz sayı mı kontrol edelim
+            let valStr = '';
+            if (c.observed_value != null) {
+                if (typeof c.observed_value === 'object') {
+                    const keys = Object.values(c.observed_value);
+                    if (keys.length === 2) {
+                        valStr = `: ${keys[0]} / ${keys[1]} ${c.unit ?? ''}`;
+                    } else {
+                        valStr = `: ${JSON.stringify(c.observed_value)}`;
+                    }
+                } else {
+                    valStr = `: ${c.observed_value} ${c.unit ?? ''}`;
+                }
+            }
+
             notify({
                 id, level,
-                text: `${c.title} [${c.status}]${c.observed_value != null ? `: ${c.observed_value} ${c.unit ?? ''}`.trim() : ''}`,
+                text: `${c.title} [${c.status}]${valStr}`.trim(),
                 onClick: () => openApp(CONDITION_TO_APP[c.id] ?? 'diseases')
             });
         });
     }
     [...notifs.keys()].filter(k => k.startsWith('cond-') && !live.has(k)).forEach(clearNotify);
 }
-
 // =====================================================
 // 9. BAŞLATMA VE EVENT BINDING
 // =====================================================
