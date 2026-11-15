@@ -1,45 +1,45 @@
 <!DOCTYPE html>
-<html lang="tr">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Astronot Sağlık İzleme Sistemi - NASA Space Apps</title>
+    <title>PULSE - Astronaut Health Monitor</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <!-- Login Ekranı -->
+    <!-- Login Screen -->
     <div id="login-screen" hidden>
         <div class="login-card">
-            <h1>Astronot Girişi</h1>
+            <h1>Astronaut Login</h1>
             <label>
-                Kullanıcı
+                User
                 <select id="login-user">
-                    <option value="user1">Astronot 1</option>
-                    <option value="user2">Astronot 2</option>
-                    <option value="user3">Astronot 3</option>
+                    <option value="user1">Astronaut 1</option>
+                    <option value="user2">Astronaut 2</option>
+                    <option value="user3">Astronaut 3</option>
                 </select>
             </label>
             <label>
-                6 Haneli Parola
+                6-Digit Passcode
                 <input id="login-pass" type="password" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" autocomplete="off" placeholder="••••••">
             </label>
-            <button id="login-btn" type="button">Giriş Yap</button>
+            <button id="login-btn" type="button">Log In</button>
         </div>
     </div>
 
-    <button id="hexagon-btn" title="Ana Menü">⬡</button>
-    <button id="cancel-menu-btn" title="İptal">✕</button>
+    <button id="hexagon-btn" title="Main Menu">⬡</button>
+    <button id="cancel-menu-btn" title="Cancel">✕</button>
 
     <main class="dashboard-container">
         <section class="left-section" id="left-section">
             <div class="photo-frame" id="initial-photo">
-                <img src="/481975394_1311642796741301_4408107372293563832_n.jpg" alt="Kişisel Fotoğraf Çerçevesi">
+                <img src="/481975394_1311642796741301_4408107372293563832_n.jpg" alt="Personal Photo Frame">
             </div>
         </section>
         <section class="info-section">
             <div class="info-panel" id="info-panel">
                 <h1 id="panel-title">Welcome</h1>
-                <p id="panel-desc">More detail bla bla bla</p>
+                <p id="panel-desc">Waiting for telemetry data...</p>
             </div>
         </section>
     </main>
@@ -53,34 +53,34 @@
 
         <div class="menu-items-wrapper">
             <div class="ring-group" data-ring="0">
-                <button class="app-btn workout" id="environment">Ortam</button>
-                <button class="app-btn workout" id="space">Uzay</button>
+                <button class="app-btn workout" id="environment">Environment</button>
+                <button class="app-btn workout" id="space">Space</button>
             </div>
             <div class="ring-group" data-ring="1">
-                <button class="app-btn psych" id="stabilite">Sağlamlık</button>
-                <button class="app-btn psych" id="actions">Davranışlar</button>
-                <button class="app-btn psych" id="psychology">Psikoloji</button>
+                <button class="app-btn psych" id="stability">Stability</button>
+                <button class="app-btn psych" id="actions">Actions</button>
+                <button class="app-btn psych" id="psychology">Psychology</button>
             </div>
             <div class="ring-group" data-ring="2">
-                <button class="app-btn input" id="standard-input">Klasik Veri</button>
-                <button class="app-btn bio" id="bacteria">Bakteriler</button>
-                <button class="app-btn bio" id="immunity">Bağışıklık</button>
-                <button class="app-btn bio" id="diseases">Hastalıklar</button>
-                <button class="app-btn input" id="settings">Ayarlar</button>
+                <button class="app-btn input" id="standard-input">Daily Input</button>
+                <button class="app-btn bio" id="bacteria">Bacteria</button>
+                <button class="app-btn bio" id="immunity">Immunity</button>
+                <button class="app-btn bio" id="diseases">Conditions</button>
+                <button class="app-btn input" id="settings">Settings</button>
             </div>
             <div class="ring-group" data-ring="3">
-                <button class="app-btn monitoring" id="heart">Kalp</button>
-                <button class="app-btn monitoring" id="bone">Kemik</button>
-                <button class="app-btn monitoring" id="sleep">Uyku</button>
-                <button class="app-btn empty" disabled style="opacity: 0.3; cursor: default;">Boş</button>
-                <button class="app-btn radiation" id="active-radiation">Radyasyon</button>
-                <button class="app-btn team" id="teammates">Takım</button>
+                <button class="app-btn monitoring" id="heart">Heart</button>
+                <button class="app-btn monitoring" id="bone">Bone</button>
+                <button class="app-btn monitoring" id="sleep">Sleep</button>
+                <button class="app-btn empty" disabled style="opacity: 0.3; cursor: default;">Empty</button>
+                <button class="app-btn radiation" id="active-radiation">Radiation</button>
+                <button class="app-btn team" id="teammates">Crew</button>
             </div>
             <div class="ring-group" data-ring="4">
-                <button class="app-btn procedure" id="learn">Acil Öğren</button>
-                <button class="app-btn procedure" id="standard-procedure">Prosedürler</button>
-                <button class="app-btn procedure" id="emergency">Acil Durum</button>
-                <button class="app-btn empty" disabled style="opacity: 0.3; cursor: default;">Boş</button>
+                <button class="app-btn procedure" id="learn">Quick Learn</button>
+                <button class="app-btn procedure" id="standard-procedure">Procedures</button>
+                <button class="app-btn procedure" id="emergency">Emergency</button>
+                <button class="app-btn empty" disabled style="opacity: 0.3; cursor: default;">Empty</button>
             </div>
         </div>
     </nav>
