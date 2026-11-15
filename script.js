@@ -74,7 +74,7 @@ function attemptLogin() {
         notify({
             id: 'login-fail',
             level: 'mid',
-            text: 'Hatalı giriş: kullanıcı veya parola yanlış'
+            text: 'ERR: Incorrect user or password.'
         });
         passEl.value = '';
         passEl.focus();
@@ -93,145 +93,167 @@ function stopPolling() {
 }
 
 // =====================================================
-// 2. UYGULAMA İÇERİKLERİ (Güncellenmiş Modüller)
+// 2. UYGULAMA İÇERİKLERİ (Güncellenmiş 8+ Kategori)
 // =====================================================
 const appConfigs = {
-    'heart': {
+        'heart': {
         title: "Kalp Sağlığı İzleme",
-        right: "Kalp Modülü: Anlık nabız, oksijen satürasyonu, tansiyon ve solunum hızı takibi.",
+        right: "Kalp Modülü: Nabız, tansiyon, HRV, SpO2 ve kan şekeri takibi.",
         left: `<div class="app-content-box">
-            <h2>Kalp & Dolaşım</h2>
-            <div class="data-card"><span>Anlık Nabız</span><strong id="heart-rate-now">--</strong></div>
-            <div class="data-card"><span>Oksijen Satürasyonu</span><strong id="oxygen-sat-now">--</strong></div>
-            <div class="data-card"><span>Tansiyon (Sist./Diyast.)</span><strong id="blood-pressure-now">--</strong></div>
-            <div class="data-card"><span>Solunum Hızı</span><strong id="respiratory-now">--</strong></div>
+            <h2>Kalp & Metabolizma</h2>
+            <div class="data-card"><span>Nabız (Heart Rate)</span><strong data-metric="heart_rate"></strong></div>
+            <div class="data-card"><span>Tansiyon (Sist./Diyast.)</span><strong data-metric="systolic_bp,diastolic_bp"></strong></div>
+            <div class="data-card"><span>HRV (Değişkenlik)</span><strong data-metric="heart_rate_variability"></strong></div>
+            <div class="data-card"><span>Oksijen (SpO2)</span><strong data-metric="spo2"></strong></div>
+            <div class="data-card"><span>Kan Şekeri</span><strong data-metric="blood_glucose"></strong></div>
         </div>`
     },
     'bone': {
-        title: "Kemik Yoğunluğu Analizi",
-        right: "Kemik Yoğunluğu: Yerçekimsiz ortam kalsiyum seviyeleri ve kemik mineral yoğunluğu.",
+        title: "Kemik & Vücut Dengesi",
+        right: "Kemik Modülü: Vücut kütlesi ve hidrasyon seviyeleri izleniyor.",
         left: `<div class="app-content-box">
-            <h2>Kemik Durumu</h2>
-            <div class="data-card"><span>Kalsiyum Seviyesi</span><strong id="bone-calcium-now">--</strong></div>
-            <div class="data-card"><span>Kemik Yoğunluğu</span><strong id="bone-density-now">--</strong></div>
+            <h2>Kemik & Hidrasyon</h2>
+            <div class="data-card"><span>Vücut Kütlesi</span><strong data-metric="body_mass"></strong></div>
+            <div class="data-card"><span>Hidrasyon Seviyesi</span><strong data-metric="hydration_level"></strong></div>
+        </div>`
+    },
+    'immunity': {
+        title: "Bağışıklık & Solunum",
+        right: "Bağışıklık Modülü: Solunum hızı ve genel direnç göstergeleri.",
+        left: `<div class="app-content-box">
+            <h2>Bağışıklık Durumu</h2>
+            <div class="data-card"><span>Solunum Hızı</span><strong data-metric="respiratory_rate"></strong></div>
+        </div>`
+    },
+    'stabilite': {
+        title: "Fiziksel Sağlamlık",
+        right: "Sağlamlık Modülü: Vücut kütlesi ve fiziksel aktivite endeksi.",
+        left: `<div class="app-content-box">
+            <h2>Sağlamlık Durumu</h2>
+            <div class="data-card"><span>Vücut Kütlesi</span><strong data-metric="body_mass"></strong></div>
+            <div class="data-card"><span>Fiziksel Aktivite</span><strong data-metric="physical_activity"></strong></div>
+        </div>`
+    },
+    'sleep': {
+        title: "Uyku Düzeni İzleme",
+        right: "Uyku Analizi: Uyku süresi ve uyku kalitesi endeksi.",
+        left: `<div class="app-content-box">
+            <h2>Uyku Verileri</h2>
+            <div class="data-card"><span>Uyku Süresi</span><strong data-metric="sleep_duration"></strong></div>
+            <div class="data-card"><span>Uyku Kalitesi</span><strong data-metric="sleep_quality"></strong></div>
+        </div>`
+    },
+    'psychology': {
+        title: "Psikoloji & Stres Yönetimi",
+        right: "Psikoloji Modülü: Astronot stres seviyesi ve zihinsel denge.",
+        left: `<div class="app-content-box">
+            <h2>Psikolojik Durum</h2>
+            <div class="data-card"><span>Stres Seviyesi</span><strong data-metric="stress_level"></strong></div>
         </div>`
     },
     'environment': {
-        title: "Ortam Koşulları",
-        right: "Ortam Modülü: Kabin içi basınç, sıcaklık, CO2 ve nem seviyeleri izleniyor.",
-        left: `<div class="app-content-box">
+        title: "Kabin Ortam Koşulları",
+        right: "Ortam Modülü: Kabin içi sıcaklık, basınç, gazlar ve yerçekimi durumu.",
+        left: `<div class="app-content-box" style="gap: 8px;">
             <h2>Kabin Ortamı</h2>
-            <div class="data-card"><span>Kabin Basıncı</span><strong id="env-pressure-now">--</strong></div>
-            <div class="data-card"><span>Kabin Sıcaklığı</span><strong id="env-temp-now">--</strong></div>
-            <div class="data-card"><span>Karbondioksit (CO2)</span><strong id="env-co2-now">--</strong></div>
-            <div class="data-card"><span>Nem Oranı</span><strong id="env-humidity-now">--</strong></div>
+            <div class="data-card"><span>Kabin Sıcaklığı</span><strong data-metric="cabin_temperature"></strong></div>
+            <div class="data-card"><span>Kabin Basıncı</span><strong data-metric="cabin_pressure"></strong></div>
+            <div class="data-card"><span>Nem Oranı</span><strong data-metric="cabin_humidity"></strong></div>
+            <div class="data-card"><span>Oksijen (O2)</span><strong data-metric="cabin_oxygen"></strong></div>
+            <div class="data-card"><span>Karbondioksit (CO2)</span><strong data-metric="cabin_co2"></strong></div>
+            <div class="data-card"><span>Mikroyerçekimi</span><strong data-metric="microgravity_level"></strong></div>
+            <div class="data-card"><span>Hava Kalitesi</span><strong data-metric="cabin_air_quality"></strong></div>
         </div>`
     },
     'space': {
-        title: "Uzay & ISS Konum / Hava Durumu",
-        right: "Uzay Modülü: ISS yörünge simülasyonu, Dünya mesafesi ve uzay havası bağlamı.",
+        title: "Uzay & ISS Konum Verileri",
+        right: "Uzay Modülü: ISS anlık koordinatları, irtifası ve yörünge hızı.",
         left: `<div class="app-content-box">
-            <h2>Uzay & ISS Simülasyonu</h2>
-            <div class="data-card"><span>Dünya - ISS Mesafesi</span><strong id="iss-distance-now">--</strong></div>
-            <div class="data-card"><span>ISS Konum (Enl/Boy/Yük)</span><strong id="iss-coords-now">--</strong></div>
-            <div class="data-card"><span>Uzay Havası</span><strong id="space-weather-now">--</strong></div>
-            <div style="background: rgba(0,0,0,0.3); border-radius: 12px; padding: 12px; text-align: center; border: 1px dashed var(--second);">
-                <p style="font-size: 0.9rem; color: var(--second); margin-bottom: 5px; font-weight: bold;">[ 3D Yörünge Simülasyonu ]</p>
-                <div id="iss-3d-visual" style="font-size: 1.05rem; color: #fff;">ISS Dünya Yörüngesinde Aktif 🛰️</div>
-            </div>
+            <h2>ISS Yörünge Verileri</h2>
+            <div class="data-card"><span>Enlem (Latitude)</span><strong data-metric="iss.latitude" data-unit="°" data-digits="2"></strong></div>
+            <div class="data-card"><span>Boylam (Longitude)</span><strong data-metric="iss.longitude" data-unit="°" data-digits="2"></strong></div>
+            <div class="data-card"><span>İrtifa (Altitude)</span><strong data-metric="iss.altitude_km" data-unit="km" data-digits="1"></strong></div>
+            <div class="data-card"><span>Hız (Velocity)</span><strong data-metric="iss.velocity_km_h" data-unit="km/sa" data-digits="0"></strong></div>
+            <div class="data-card"><span>Uzay Havası Durumu</span><strong data-metric="space.status"></strong></div>
+            <div class="data-card"><span>Güneş Parçacık Olayları</span><strong data-metric="space.sep_events" data-format="count" data-unless="space.status=DISABLED_NO_API_KEY"></strong></div>
         </div>`
     },
     'active-radiation': {
-        title: "Radyasyon Riski",
-        right: "Aktif Radyasyon Riski: Anlık akı, doz hızı ve kümülatif doz ölçümleri.",
+        title: "Radyasyon & Uzay Havası",
+        right: "Radyasyon Modülü: Doz oranı, kümülatif doz ve jeomanyetik fırtınalar.",
         left: `<div class="app-content-box">
             <h2>Radyasyon Dozimetresi</h2>
-            <div class="data-card"><span>Anlık Akı (Current Flux)</span><strong id="radiation-flux-now">--</strong></div>
-            <div class="data-card"><span>Doz Hızı (Dose Rate)</span><strong id="radiation-dose-rate">--</strong></div>
-            <div class="data-card"><span>Kümülatif Doz</span><strong id="radiation-cum-dose">--</strong></div>
-        </div>`
-    },
-    'cancer': {
-        title: "Kanser Riski",
-        right: "Kanser Risk Modülü: Bu modül boş bırakılmıştır.",
-        left: `<div class="app-content-box" style="text-align: center; justify-content: center; align-items: center;">
-            <h2 style="border: none;">Boş</h2>
-            <p style="color: rgba(255,255,255,0.6); font-size: 1.1rem;">Bu sekme şu anda boş durumdadır.</p>
+            <div class="data-card"><span>Doz Hızı</span><strong data-metric="rad.dose_rate_usv_h" data-unit="µSv/h" data-unless="rad.integration_status=NO_DOSE_INTEGRATED"></strong></div>
+            <div class="data-card"><span>Kümülatif Doz</span><strong data-metric="rad.cumulative_dose_msv" data-unit="mSv" data-unless="rad.integration_status=NO_DOSE_INTEGRATED"></strong></div>
+            <div class="data-card"><span>Veri Durumu</span><strong data-metric="rad.measurement_status"></strong></div>
         </div>`
     },
     'tiredness': {
         title: "Yorgunluk Takibi",
         right: "Yorgunluk Durumu: Uyku süresi ve dinlenme verileri.",
+        left: `<div class="app-content-box"><h2>Yorgunluk</h2><div class="data-card"><span>Uyku Süresi</span><strong data-metric="sleep_duration"></strong></div></div>`
+    },
+    'immunity': {
+        title: "Bağışıklık & Solunum",
+        right: "Bağışıklık Modülü: Solunum hızı ve genel direnç göstergeleri.",
         left: `<div class="app-content-box">
-            <h2>Yorgunluk & Uyku</h2>
-            <div class="data-card"><span>Uyku Süresi</span><strong id="tiredness-sleep-now">--</strong></div>
-            <div class="data-card"><span>Fiziksel Yorgunluk</span><strong>3 / 10</strong></div>
-            <div class="data-card"><span>Mental Durum</span><strong>Stabil</strong></div>
+            <h2>Bağışıklık Durumu</h2>
+            <div class="data-card"><span>Solunum Hızı</span><strong id="immunity-resp-now">--</strong></div>
         </div>`
     },
     'diseases': {
         title: "Hastalıklar & Aktif Bulgular",
-        right: "Hastalık Taraması: Sistem tarafından algılanan anlık tıbbi bulgular ve uyarılar.",
+        right: "Hastalık Taraması: Sistem tarafından algılanan anlık tıbbi bulgular.",
         left: `<div class="app-content-box">
-            <h2>Aktif Tıbbi Bulgular</h2>
-            <div id="diseases-container" style="display: flex; flex-direction: column; gap: 10px; width: 100%; max-height: 250px; overflow-y: auto;">
-                <div class="data-card"><span>Tarama Durumu</span><strong>Aktif Bulgu Bekleniyor...</strong></div>
+            <h2>Aktif Bulgular (Active Conditions)</h2>
+            <div id="diseases-container" style="display: flex; flex-direction: column; gap: 10px; width: 100%; max-height: 260px; overflow-y: auto;">
+                <div class="data-card"><span>Durum</span><strong>Veri bekleniyor...</strong></div>
             </div>
         </div>`
     },
-    'sleep': {
-        title: "Uyku Düzeni İzleme",
-        right: "Uyku Analizi: Son 24 saatteki uyku verileri.",
-        left: `<div class="app-content-box"><h2>Uyku Verileri</h2><div class="data-card"><span>Son Uyku</span><strong id="sleep-duration-now">--</strong></div><div class="data-card"><span>REM Evresi</span><strong>%18 (Düşük)</strong></div><div class="data-card"><span>Uyku Kalitesi</span><strong>Orta</strong></div></div>`
-    },
-    'stabilite': {
-        title: "Psikolojik Sağlamlık",
-        right: "Psikolojik Sağlamlık: Stres endeksi dengeli.",
-        left: `<div class="app-content-box"><h2>Psikoloji</h2><div class="data-card"><span>Stres Endeksi</span><strong>1.4 / 5</strong></div><div class="data-card"><span>Moral Skoru</span><strong>88 / 100</strong></div><div class="data-card"><span>Motivasyon</span><strong>Yüksek</strong></div></div>`
-    },
-    'actions': {
-        title: "Davranışsal Tepki Analizi",
-        right: "Davranışsal Tepki: Refleks testleri optimal seviyede.",
-        left: `<div class="app-content-box"><h2>Davranış & Refleks</h2><div class="data-card"><span>Tepki Süresi</span><strong>210 ms</strong></div><div class="data-card"><span>Karar Doğruluğu</span><strong>%96</strong></div><div class="data-card"><span>Bilişsel Yük</span><strong>Normal</strong></div></div>`
+    'cancer': {
+        title: "Kanser Riski",
+        right: "Bu sekme boş bırakılmıştır.",
+        left: `<div class="app-content-box" style="text-align: center; justify-content: center; align-items: center;"><h2 style="border: none;">Boş</h2></div>`
     },
     'bacteria': {
         title: "Bakteriyel Flora",
         right: "Bakteriyel Flora: Mikrobiyom çeşitliliği stabil.",
-        left: `<div class="app-content-box"><h2>Mikrobiyom</h2><div class="data-card"><span>Çeşitlilik Skoru</span><strong>94 / 100</strong></div><div class="data-card"><span>Patojen Riski</span><strong>Sıfır</strong></div><div class="data-card"><span>Cilt Florası</span><strong>Stabil</strong></div></div>`
+        left: `<div class="app-content-box"><h2>Mikrobiyom</h2><div class="data-card"><span>Çeşitlilik Skoru</span><strong>94 / 100</strong></div></div>`
     },
-    'immunity': {
-        title: "Bağışıklık Sistemi",
-        right: "Bağışıklık Sistemi: Lökosit ve antikor seviyeleri normal.",
-        left: `<div class="app-content-box"><h2>Bağışıklık Durumu</h2><div class="data-card"><span>Lökosit Sayısı</span><strong>6.8 k/uL</strong></div><div class="data-card"><span>Antikor Seviyesi</span><strong>Normal</strong></div><div class="data-card"><span>Enfeksiyon</span><strong>Yok</strong></div></div>`
-    },
-    'standart-input': {
+    'standard-input': {
         title: "Günlük Veri Girişi",
-        right: "Gündelik Veri Girdisi: Uyku, yorgunluk ve stres seviyenizi girin.",
-        left: `<div class="app-content-box"><h2>Günlük Veri Girişi</h2><form class="app-form" onsubmit="event.preventDefault(); alert('Veriler kaydedildi!');"><div class="form-group"><label>Uyku Süresi (Saat):</label><input type="number" value="7" min="0" max="24" step="0.5"></div><div class="form-group"><label>Yorgunluk (1-10):</label><input type="number" min="1" max="10" value="3"></div><div class="form-group"><label>Stres Seviyesi:</label><select><option>Düşük</option><option selected>Normal</option><option>Yüksek</option></select></div><button type="submit" class="submit-btn">Verileri Kaydet</button></form></div>`
+        right: "Gündelik Veri Girdisi: Uyku, yorgunluk ve stres seviyenizi girin (v0.4.0).",
+        left: `<div class="app-content-box">
+            <h2>Günlük Veri Girişi</h2>
+            <form class="app-form" onsubmit="submitDailyEntry(event)">
+                <div class="form-group">
+                    <label>Uyku Süresi (Saat, 0-24):</label>
+                    <input type="number" id="daily-sleep-input" value="7.5" min="0" max="24" step="0.5">
+                </div>
+                <div class="form-group">
+                    <label>Yorgunluk Seviyesi (0-10):</label>
+                    <input type="number" id="daily-fatigue-input" min="0" max="10" value="4">
+                </div>
+                <div class="form-group">
+                    <label>Stres Seviyesi (0-10):</label>
+                    <input type="number" id="daily-stress-select" min="0" max="10" value="5">
+                </div>
+                <button type="submit" class="submit-btn">Verileri Sunucuya Gönder</button>
+            </form>
+        </div>`
     },
     'teammates': {
         title: "Takım Arkadaşları",
-        right: "Takım Arkadaşları: Ekip sağlık durumları.",
+        right: "Ekip sağlık durumları.",
         left: `<div class="app-content-box"><h2>Ekip Durumu</h2><div class="data-card"><span>Astronot 1</span><strong id="teammate-1-status">--</strong></div><div class="data-card"><span>Astronot 2</span><strong id="teammate-2-status">--</strong></div><div class="data-card"><span>Astronot 3</span><strong id="teammate-3-status">--</strong></div></div>`
     },
-    'learn': {
-        title: "Acil Durum Eğitimi",
-        right: "Acil Durum Eğitimi: Basınç düşüşü ve oksijen maskesi prosedürleri.",
-        left: `<div class="app-content-box"><h2>Eğitim Modülleri</h2><div class="data-card"><span>Basınç Düşüşü</span><strong>Tamamlandı</strong></div><div class="data-card"><span>Oksijen Maskesi</span><strong>Tamamlandı</strong></div><div class="data-card"><span>Yangın Prosedürü</span><strong>İnceleniyor</strong></div></div>`
-    },
-    'standart-procedure': {
-        title: "Standart Prosedürler",
-        right: "Standart Prosedürler: Günlük bakım ve sistem kontrolü.",
-        left: `<div class="app-content-box"><h2>Kontrol Listesi</h2><div class="data-card"><strong>https://ntrs.nasa.gov/api/citations/20210013869/downloads/20210013869.pdf?attachment=true#4#19#4</strong></div><div class="data-card"><span>Su Geri Dönüşüm</span><strong>Normal (%98)</strong></div><div class="data-card"><span>İletişim Anteni</span><strong>Aktif</strong></div></div>`
-    },
-    'emergency': {
-        title: "Acil Durum Prosedürleri",
-        right: "Acil Durum Prosedürleri: Tahliye rotaları ve kriz planları.",
-        left: `<div class="app-content-box"><h2>Kriz Planları</h2><div class="data-card"><span>Tahliye Rotası</span><strong>Açık</strong></div><div class="data-card"><span>Güvenli Sığınak</span><strong>Hazır</strong></div><div class="data-card"><span>Acil Ekipman</span><strong>Eksiksiz</strong></div></div>`
-    },
+    'learn': { title: "Acil Eğitim", right: "", left: "" },
+    'standard-procedure': { title: "Prosedürler", right: "", left: "" },
+    'emergency': { title: "Acil Durum", right: "", left: "" },
     'settings': {
         title: "Ayarlar",
-        right: "Ayarlar: Ana ekranda görünecek aile fotoğrafını değiştirebilir veya mevcut oturumu sonlandırabilirsiniz.",
+        right: "Oturum ve Ayarlar",
         left: `<div class="app-content-box">
             <h2>Ayarlar & Oturum</h2>
             <input type="file" id="photo-input" accept="image/*" hidden>
@@ -250,6 +272,7 @@ function layoutMenu() {
     const W = innerWidth, H = innerHeight;
     const M = 16, HEX = 161;
     const all = [...document.querySelectorAll('.app-btn')];
+    if (all.length === 0) return;
     const maxW = Math.max(...all.map(b => b.offsetWidth));
     const maxH = Math.max(...all.map(b => b.offsetHeight));
     const gap = maxW + 24;
@@ -284,6 +307,8 @@ addEventListener('resize', layoutMenu);
 // 4. FOTOĞRAF ÇERÇEVESİ VE AYARLAR
 // =====================================================
 const PHOTO_KEY = 'family-photo';
+const photoKey = () => `${PHOTO_KEY}-${currentAstronaut}`;  // hemen altına ekle
+
 const DEFAULT_PHOTO = 'data:image/svg+xml;utf8,' + encodeURIComponent(
     '<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400"><rect width="100%" height="100%" fill="#00273d"/>' +
     '<text x="50%" y="50%" fill="#e7e158" font-family="sans-serif" font-size="26" text-anchor="middle">' +
@@ -333,7 +358,7 @@ function bindPhotoControls() {
                 localStorage.setItem(PHOTO_KEY, c.toDataURL('image/jpeg', 0.85));
                 pick.textContent = 'Fotoğraf kaydedildi ✓';
             } catch { 
-                pick.textContent = 'Kaydedilemedi (Boyut çok büyük)'; 
+                pick.textContent = 'Kaydedilemedi'; 
             }
         };
         img.src = URL.createObjectURL(file);
@@ -511,277 +536,101 @@ async function fetchCrew() {
         }
     } catch (e) {}
 }
+// =====================================================
+// TELEMETRİ OKUMA YAPISI: iç içe JSON → düz anahtar listesi → data-metric
+// =====================================================
+const GROUP_PREFIX = {
+    physiological_data: '',            // heart_rate, spo2, ...
+    environmental_data: '',            // cabin_co2, cabin_pressure, ...
+    iss_position_data: 'iss.',         // iss.altitude_km, iss.latitude, ...
+    space_weather_data: 'space.',      // space.status, space.sep_events, ...
+    radiation_dosimetry_data: 'rad.'   // rad.cumulative_dose_msv, rad.integration_status, ...
+};
+const UNIT_TR = { 'breaths/min': 'nefes/dk', 'h': 'saat', 'index': 'indeks', 'simulation_index': 'sim. indeks' };
+const Q_ORDER = ['MISSING', 'INVALID', 'STALE', 'UNKNOWN', 'VALID'];   // en kötüden en iyiye
 
-function readMeasurement(measurement, defaultUnit = '') {
-    if (measurement == null) return null;
-    
-    if (typeof measurement === 'object') {
-        if (measurement.value == null) return null;
-        const quality = measurement.quality ?? 'UNKNOWN';
-        
-        if (quality === 'INVALID' || quality === 'MISSING' || quality === 'UNKNOWN') {
-            return null;
-        }
-        
-        return {
-            value: measurement.value,
-            unit: measurement.unit ?? defaultUnit,
-            stale: quality === 'STALE',
-            measuredAt: measurement.measured_at
+// data.telemetry içindeki her alanı tek bir düz sözlüğe çevirir
+function buildMetricIndex(data) {
+    const index = {};
+    for (const [group, fields] of Object.entries(data?.telemetry ?? {})) {
+        if (!fields || typeof fields !== 'object') continue;
+        const prefix = GROUP_PREFIX[group] ?? `${group}.`;
+        for (const [key, raw] of Object.entries(fields)) index[prefix + key] = raw;
+    }
+    return index;
+}
+
+const isMeasurement = v => v && typeof v === 'object' && !Array.isArray(v) && 'value' in v;
+
+function fmtNum(v, digits) {
+    if (typeof v !== 'number') return String(v);
+    if (digits != null) return v.toFixed(digits);
+    if (v !== 0 && Math.abs(v) < 1) return Number(v.toPrecision(3)).toString();
+    return (Math.round(v * 10) / 10).toString();
+}
+
+// Ham bir alanı { ok, value, unit, quality } biçimine çevirir
+function readField(raw, { digits, unit, format } = {}) {
+    const d = digits != null ? Number(digits) : undefined;
+    if (raw == null) return { ok: false, quality: 'MISSING' };
+    if (Array.isArray(raw)) return { ok: true, value: format === 'count' ? String(raw.length) : raw.join(', '), unit: unit ?? '' };
+    if (isMeasurement(raw)) {
+        const q = raw.quality ?? 'UNKNOWN';
+        if (raw.value == null || q === 'MISSING' || q === 'INVALID') return { ok: false, quality: q };
+        const u = raw.unit === 'unknown' ? '' : (UNIT_TR[raw.unit] ?? raw.unit ?? '');
+        return { ok: true, value: fmtNum(raw.value, d), unit: u, quality: q };
+    }
+    if (typeof raw === 'number') return { ok: true, value: fmtNum(raw, d), unit: unit ?? '' };
+    return { ok: true, value: String(raw), unit: unit ?? '' };
+}
+
+// root içindeki tüm [data-metric] elemanlarını doldurur
+function bindMetrics(root, data) {
+    const index = buildMetricIndex(data);
+    root.querySelectorAll('[data-metric]').forEach(el => {
+        const setText = (text, quality) => {
+            el.textContent = text;
+            if (quality) { el.dataset.quality = quality; el.title = `Ölçüm kalitesi: ${quality}`; }
+            else { delete el.dataset.quality; el.removeAttribute('title'); }
         };
-    }
-    
-    return { value: measurement, unit: defaultUnit, stale: false };
-}
 
-function getTelemetryValue(data, targetAstronaut, category, key) {
-    if (!data) return null;
-
-    let targetTelemetry = null;
-
-    if (data.telemetry) {
-        targetTelemetry = data.telemetry;
-    } else if (data.crew && targetAstronaut) {
-        const astronautObj = data.crew.find(c => c.astronaut_id === targetAstronaut);
-        if (astronautObj && astronautObj.telemetry) {
-            targetTelemetry = astronautObj.telemetry;
+        // data-unless="anahtar=değer": o durumdaysa veri yok say (ör. dozimetre hatası varken "0 mSv" gösterme)
+        const unless = el.dataset.unless;
+        if (unless) {
+            const [k, v] = unless.split('=');
+            if (String(index[k]) === v) return setText('--');
         }
-    }
 
-    if (!targetTelemetry) return null;
+        const opts = { digits: el.dataset.digits, unit: el.dataset.unit, format: el.dataset.format };
+        const parts = el.dataset.metric.split(',').map(k => readField(index[k.trim()], opts));   // "systolic_bp,diastolic_bp" → 113.6/72.9
+        const qs = parts.map(p => p.quality).filter(Boolean);
+        const worst = Q_ORDER.find(q => qs.includes(q));
 
-    let targetGroup = null;
-
-    switch (category) {
-        case 'physiological':
-            targetGroup = targetTelemetry.physiological_data;
-            break;
-        case 'environmental':
-            targetGroup = targetTelemetry.environmental_data;
-            break;
-        case 'radiation':
-            targetGroup = targetTelemetry.radiation_dosimetry_data;
-            break;
-        case 'iss':
-            targetGroup = targetTelemetry.iss_position_data;
-            break;
-        case 'space_weather':
-            targetGroup = targetTelemetry.space_weather_data;
-            break;
-        default:
-            return null;
-    }
-
-    if (!targetGroup || targetGroup[key] == null) return null;
-
-    const defaultUnits = {
-        heart_rate: 'bpm',
-        blood_glucose: 'mg/dL',
-        body_temperature: '°C',
-        oxygen_saturation: '%',
-        respiratory_rate: 'rpm',
-        blood_pressure_systolic: 'mmHg',
-        blood_pressure_diastolic: 'mmHg',
-        cabin_pressure: 'kPa',
-        cabin_temperature: '°C',
-        carbon_dioxide_level: 'mmHg',
-        humidity: '%',
-        current_flux: 'mSv/h',
-        dose_rate: 'mSv/h',
-        cumulative_dose: 'mSv',
-        calcium_level: 'mg/dL',
-        bone_density: 'g/cm²',
-        sleep_duration: 'saat'
-    };
-
-    return readMeasurement(targetGroup[key], defaultUnits[key] || '');
+        if (!parts.every(p => p.ok)) return setText('--', worst);
+        setText(`${parts.map(p => p.value).join('/')} ${parts[0].unit}`.trim(), worst);
+    });
 }
 
-function formatTelemetryDisplay(metricObj, fallbackText = '--') {
-    if (!metricObj) return fallbackText;
-    const text = `${metricObj.value} ${metricObj.unit}`.trim();
-    return metricObj.stale ? `${text} (eski)` : text;
-}
+const esc = s => String(s ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 
-function updateUIWithTelemetry(data) {
-    lastData = data;
-    clearNotify('conn');
-    document.body.setAttribute('data-system-status', data.overall_status);
-
-    renderActiveConditions(data.active_conditions ?? [], data.overall_status);
-
-    if (data.data_quality && data.data_quality.status !== 'GOOD') {
-        notify({
-            id: 'dq', level: 'low',
-            text: `Veri kalitesi: ${(data.data_quality.warnings ?? []).join(', ') || data.data_quality.status}`
-        });
-    } else {
-        clearNotify('dq');
-    }
-
-    updateLiveFields(data);
-    updateHomePanel();
-}
-
-// ------------------------------------------------     
-// CANLI ALANLARI GÜNCELLEME
-// ------------------------------------------------     
 function updateLiveFields(data) {
     if (!data) return;
+    bindMetrics(leftSection, data);
 
-    // 1. Kalp Modülü Metrikleri
-    const hrEl = document.getElementById('heart-rate-now');
-    if (hrEl) {
-        const hr = getTelemetryValue(data, currentAstronaut, 'physiological', 'heart_rate') 
-                   ?? extractHeartRateFromConditions(data);
-        hrEl.textContent = formatTelemetryDisplay(hr, '--');
-    }
-
-    const o2El = document.getElementById('oxygen-sat-now');
-    if (o2El) {
-        const o2 = getTelemetryValue(data, currentAstronaut, 'physiological', 'oxygen_saturation');
-        o2El.textContent = formatTelemetryDisplay(o2, '--');
-    }
-
-    const bpEl = document.getElementById('blood-pressure-now');
-    if (bpEl) {
-        const sys = getTelemetryValue(data, currentAstronaut, 'physiological', 'blood_pressure_systolic');
-        const dia = getTelemetryValue(data, currentAstronaut, 'physiological', 'blood_pressure_diastolic');
-        if (sys && dia) {
-            bpEl.textContent = `${sys.value}/${dia.value} mmHg`;
-        } else {
-            bpEl.textContent = '--';
-        }
-    }
-
-    const respEl = document.getElementById('respiratory-now');
-    if (respEl) {
-        const resp = getTelemetryValue(data, currentAstronaut, 'physiological', 'respiratory_rate');
-        respEl.textContent = formatTelemetryDisplay(resp, '--');
-    }
-
-    // 2. Kemik Modülü Metrikleri
-    const calciumEl = document.getElementById('bone-calcium-now');
-    if (calciumEl) {
-        const calcium = getTelemetryValue(data, currentAstronaut, 'physiological', 'calcium_level');
-        calciumEl.textContent = formatTelemetryDisplay(calcium, '--');
-    }
-
-    const densityEl = document.getElementById('bone-density-now');
-    if (densityEl) {
-        const density = getTelemetryValue(data, currentAstronaut, 'physiological', 'bone_density');
-        densityEl.textContent = formatTelemetryDisplay(density, '--');
-    }
-
-    // 3. Ortam Modülü
-    const pressEl = document.getElementById('env-pressure-now');
-    if (pressEl) {
-        const p = getTelemetryValue(data, currentAstronaut, 'environmental', 'cabin_pressure');
-        pressEl.textContent = formatTelemetryDisplay(p, '--');
-    }
-
-    const tempEl = document.getElementById('env-temp-now');
-    if (tempEl) {
-        const t = getTelemetryValue(data, currentAstronaut, 'environmental', 'cabin_temperature');
-        tempEl.textContent = formatTelemetryDisplay(t, '--');
-    }
-
-    const co2El = document.getElementById('env-co2-now');
-    if (co2El) {
-        const co2 = getTelemetryValue(data, currentAstronaut, 'environmental', 'carbon_dioxide_level');
-        co2El.textContent = formatTelemetryDisplay(co2, '--');
-    }
-
-    const humEl = document.getElementById('env-humidity-now');
-    if (humEl) {
-        const h = getTelemetryValue(data, currentAstronaut, 'environmental', 'humidity');
-        humEl.textContent = formatTelemetryDisplay(h, '--');
-    }
-
-    // 4. Uzay Modülü & ISS Simülasyonu
-    const distEl = document.getElementById('iss-distance-now');
-    if (distEl) {
-        const altObj = getTelemetryValue(data, currentAstronaut, 'iss', 'iss_altitude');
-        if (altObj && altObj.value != null) {
-            const earthRadius = 6371;
-            const totalDist = (earthRadius + altObj.value).toFixed(1);
-            distEl.textContent = `${totalDist} km`;
-        } else {
-            distEl.textContent = '~6771.0 km (Simüle)';
-        }
-    }
-
-    const coordsEl = document.getElementById('iss-coords-now');
-    if (coordsEl) {
-        const lat = getTelemetryValue(data, currentAstronaut, 'iss', 'iss_latitude');
-        const lon = getTelemetryValue(data, currentAstronaut, 'iss', 'iss_longitude');
-        if (lat && lon) {
-            coordsEl.textContent = `${lat.value}°, ${lon.value}°`;
-        } else {
-            coordsEl.textContent = '27.5°, 45.2° (Aktif)';
-        }
-    }
-
-    const swEl = document.getElementById('space-weather-now');
-    if (swEl) {
-        const sw = getTelemetryValue(data, currentAstronaut, 'space_weather', 'solar_wind_speed') 
-                   ?? { value: 'Normal / Stabil', unit: '' };
-        swEl.textContent = formatTelemetryDisplay(sw, 'Normal');
-    }
-
-    // 5. Radyasyon Modülü (current_flux, dose_rate, cumulative_dose)
-    const fluxEl = document.getElementById('radiation-flux-now');
-    if (fluxEl) {
-        const flux = getTelemetryValue(data, currentAstronaut, 'radiation', 'current_flux');
-        fluxEl.textContent = formatTelemetryDisplay(flux, '--');
-    }
-
-    const doseRateEl = document.getElementById('radiation-dose-rate');
-    if (doseRateEl) {
-        const dr = getTelemetryValue(data, currentAstronaut, 'radiation', 'dose_rate');
-        doseRateEl.textContent = formatTelemetryDisplay(dr, '--');
-    }
-
-    const cumDoseEl = document.getElementById('radiation-cum-dose');
-    if (cumDoseEl) {
-        const cd = getTelemetryValue(data, currentAstronaut, 'radiation', 'cumulative_dose');
-        cumDoseEl.textContent = formatTelemetryDisplay(cd, '--');
-    }
-
-    // 6. Yorgunluk Modülü (sleep_duration eklendi)
-    const tiredSleepEl = document.getElementById('tiredness-sleep-now');
-    if (tiredSleepEl) {
-        const sleep = getTelemetryValue(data, currentAstronaut, 'physiological', 'sleep_duration');
-        tiredSleepEl.textContent = formatTelemetryDisplay(sleep, '--');
-    }
-
-    // 7. Hastalıklar / Aktif Bulgular Modülü
-    const diseaseContainer = document.getElementById('diseases-container');
-    if (diseaseContainer) {
+    // Hastalıklar / aktif bulgular listesi
+    const box = document.getElementById('diseases-container');
+    if (box) {
         const conds = data.active_conditions ?? [];
-        if (conds.length > 0) {
-            diseaseContainer.innerHTML = conds.map(c => `
-                <div class="data-card" style="flex-direction: column; align-items: flex-start; gap: 4px;">
-                    <div style="display: flex; justify-content: space-width; width: 100%; justify-content: space-between;">
-                        <span style="color: var(--second);">[ ${c.status} ] ${c.title}</span>
-                        <strong>${c.observed_value ?? ''} ${c.unit ?? ''}</strong>
-                    </div>
-                    <span style="font-size: 0.85rem; opacity: 0.8;">ID: ${c.id}</span>
+        box.innerHTML = conds.length ? conds.map(c => `
+            <div class="data-card" style="flex-direction:column;align-items:flex-start;gap:4px;">
+                <div style="display:flex;justify-content:space-between;width:100%;">
+                    <span style="color:var(--second);">[ ${esc(c.status)} ] ${esc(c.title)}</span>
+                    <strong>${esc(c.observed_value)} ${esc(c.unit)}</strong>
                 </div>
-            `).join('');
-        } else {
-            diseaseContainer.innerHTML = `<div class="data-card"><span>Tarama Durumu</span><strong>Aktif bulgu / hastalık yok.</strong></div>`;
-        }
+                <span style="font-size:.85rem;opacity:.8;">${esc(c.context_note ?? c.id)}</span>
+            </div>`).join('')
+            : `<div class="data-card"><span>Tarama Durumu</span><strong>Aktif bulgu yok.</strong></div>`;
     }
-}
-
-function extractHeartRateFromConditions(data) {
-    const c = data?.active_conditions?.find(x =>
-        x.id === 'tachycardia' ||
-        x.id === 'bradycardia' ||
-        (Array.isArray(x.related_measurements) && x.related_measurements.includes('heart_rate'))
-    );
-    return c ? { value: c.observed_value, unit: c.unit ?? 'bpm', stale: false } : null;
 }
 
 function showConnectionErrorState() {
@@ -793,37 +642,26 @@ function showConnectionErrorState() {
 // =====================================================
 const STATUS_TO_LEVEL = { CAUTION: 'low', WARNING: 'mid', CRITICAL: 'high' };
 const CONDITION_TO_APP = {
-    tachycardia: 'heart',
-    bradycardia: 'heart',
-    hypoxemia: 'heart',
-    hyperglycemia: 'diseases',
-    hypoglycemia: 'diseases',
-    fever: 'diseases',
-    hypothermia: 'diseases',
-    hypertension: 'heart',
-    hypotension: 'heart',
-    tachypnea: 'diseases'
+    HYPERGLYCEMIA: 'diseases',
+    tachycardia: 'heart', bradycardia: 'heart', hypoxemia: 'heart',
+    hyperglycemia: 'diseases', hypoglycemia: 'diseases', fever: 'diseases',
+    hypothermia: 'diseases', hypertension: 'heart', hypotension: 'heart', tachypnea: 'diseases'
 };
 
 function renderActiveConditions(conditions, overallStatus) {
     const live = new Set();
-
-    // Eğer overall_status NORMAL haricindeyse ve aktif koşullar varsa çoklu bildirim tetikle[cite: 1]
     if (overallStatus && overallStatus !== 'NORMAL' && conditions && conditions.length > 0) {
         conditions.forEach(c => {
             const level = STATUS_TO_LEVEL[c.status] || 'mid';
             const id = `cond-${c.id}`;
             live.add(id);
             notify({
-                id,
-                level,
+                id, level,
                 text: `${c.title} [${c.status}]${c.observed_value != null ? `: ${c.observed_value} ${c.unit ?? ''}`.trim() : ''}`,
                 onClick: () => openApp(CONDITION_TO_APP[c.id] ?? 'diseases')
             });
         });
     }
-
-    // Aktif olmayan eski bildirimleri temizle
     [...notifs.keys()].filter(k => k.startsWith('cond-') && !live.has(k)).forEach(clearNotify);
 }
 
@@ -843,4 +681,54 @@ if (isAuth()) {
     setTimeout(layoutMenu, 50);
 } else {
     showLogin();
+}
+
+// =====================================================
+// 10. Günlük Gönderi POST
+// =====================================================
+async function submitDailyEntry(event) {
+    event.preventDefault();
+
+    // Form alanlarından değerleri alıyoruz
+    const sleepInput = document.getElementById('daily-sleep-input');
+    const fatigueInput = document.getElementById('daily-fatigue-input');
+    const stressSelect = document.getElementById('daily-stress-select');
+
+    if (!sleepInput || !fatigueInput || !stressSelect) return;
+
+    const payload = {
+        astronaut_id: currentAstronaut,
+        sleep_hours: parseFloat(sleepInput.value),
+        fatigue_level: parseInt(fatigueInput.value),
+        stress_level: parseInt(stressSelect.value) // 0-10 arası bir değer veya indeks
+    };
+
+    try {
+        const response = await fetch(`${API_BASE_URL}/api/v1/daily-entry`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: Veri gönderilemedi.`);
+        }
+
+        const result = await response.json();
+        notify({
+            id: 'daily-success',
+            level: 'low',
+            text: 'Günlük veriler başarıyla kaydedildi ✓'
+        });
+        console.log('Daily entry success:', result);
+    } catch (error) {
+        console.error('Daily entry error:', error);
+        notify({
+            id: 'daily-fail',
+            level: 'mid',
+            text: 'Hata: Günlük veriler sunucuya gönderilemedi.'
+        });
+    }
 }
