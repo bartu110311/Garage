@@ -2,7 +2,7 @@
 """
 Astronaut Health Monitoring Backend
 FastAPI Application Entry Point
-Version: 0.3.0
+Version: 0.4.0
 
 Run from Garage/healthProc:
     python main.py
@@ -15,11 +15,13 @@ It is NOT a diagnostic medical system.
 """
 
 import asyncio
+import time
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from datetime import datetime, timezone
+from itertools import count
 from threading import Lock
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,24 +35,34 @@ from condition_engine import evaluate_conditions, validate_measurement
 # CONFIGURATION
 # ==================================================
 
-API_VERSION = "0.3.0"
+API_VERSION = "0.4.0"
 REFRESH_INTERVAL_SECONDS = 2.0
+LIFE_THREATENING_VERIFICATION_SECONDS = 3.0
 
 DEFAULT_ASTRONAUT_ID = "user1"
 
 
-# Each astronaut has an independent result.
+# ==================================================
+# SHARED STATE
+# ==================================================
+
 _latest_results: dict[str, dict[str, Any]] = {}
 
-# Protects the latest result dictionary.
 _result_lock = Lock()
-
-# Serializes complete refresh and scenario-update operations.
-# Prevents an older refresh from overwriting newer scenario results.
 _refresh_lock = Lock()
-
-# Protects shared shuffler state.
 _shuffler_lock = Lock()
+
+# Daily entries are intentionally in-memory only.
+_daily_entries: dict[str, dict[str, Any]] = {}
+_daily_entry_lock = Lock()
+
+# Alarm verification and acknowledgement state.
+_alarm_lock = Lock()
+
+_life_threatening_candidates: dict[str, dict[str, Any]] = {}
+_crew_alerts: dict[str, dict[str, Any]] = {}
+
+_alert_id_counter = count(1)
 
 
 # ==================================================
@@ -58,11 +70,6 @@ _shuffler_lock = Lock()
 # ==================================================
 
 class ScenarioRequest(BaseModel):
-    """
-    Request model for changing one astronaut's
-    synthetic simulation scenario.
-    """
-
     mode: str = Field(
         default="NORMAL",
         min_length=1,
@@ -75,16 +82,46 @@ class ScenarioRequest(BaseModel):
     )
 
 
+class DailyEntryRequest(BaseModel):
+    astronaut_id: str = Field(
+        min_length=1,
+        max_length=64,
+    )
+
+    sleep_hours: float = Field(
+        ge=0,
+        le=24,
+    )
+
+    fatigue_level: int = Field(
+        ge=0,
+        le=10,
+    )
+
+    stress_level: int = Field(
+        ge=0,
+        le=10,
+    )
+
+
+class AlertAcknowledgementRequest(BaseModel):
+    response: Literal[
+        "I_AM_OK",
+        "INTERVENING",
+    ]
+
+
 # ==================================================
-# ASTRONAUT HELPERS
+# GENERAL HELPERS
 # ==================================================
+
+def utc_now_iso() -> str:
+    return datetime.now(
+        timezone.utc
+    ).isoformat()
+
 
 def get_astronaut_ids() -> tuple[str, ...]:
-    """
-    Return the astronaut identifiers configured
-    by the shuffler.
-    """
-
     astronaut_ids = getattr(
         shuffler,
         "ASTRONAUT_IDS",
@@ -128,10 +165,6 @@ def get_astronaut_ids() -> tuple[str, ...]:
 def validate_astronaut_id(
     astronaut_id: str,
 ) -> str:
-    """
-    Validate and normalize an astronaut identifier
-    against the configured crew.
-    """
 
     if not isinstance(astronaut_id, str):
         raise HTTPException(
@@ -151,25 +184,272 @@ def validate_astronaut_id(
 
 
 # ==================================================
+# LIFE-THREATENING ALERT MANAGEMENT
+# ==================================================
+
+def get_life_threatening_candidates(
+    assessment: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """
+    Read explicit life-threatening candidates from
+    condition_engine output.
+
+    The API does not infer life-threatening severity
+    from CRITICAL status alone.
+    """
+
+    candidates = []
+
+    active_conditions = assessment.get(
+        "active_conditions",
+        [],
+    )
+
+    if not isinstance(active_conditions, list):
+        active_conditions = []
+
+    for condition in active_conditions:
+
+        if not isinstance(condition, dict):
+            continue
+
+        if condition.get("life_threatening_candidate") is True:
+            candidates.append(condition)
+
+    # Also support a top-level candidate contract.
+    top_level_candidate = assessment.get(
+        "life_threatening_candidate"
+    )
+
+    if top_level_candidate is True and not candidates:
+        candidates.append({
+            "id": "LIFE_THREATENING_EVENT",
+            "title": "Life-threatening event",
+            "status": "CRITICAL",
+        })
+
+    elif isinstance(top_level_candidate, dict):
+        candidates.append(top_level_candidate)
+
+    # Remove duplicate candidate IDs.
+    unique_candidates = {}
+
+    for candidate in candidates:
+
+        candidate_id = str(
+            candidate.get(
+                "id",
+                "LIFE_THREATENING_EVENT",
+            )
+        )
+
+        unique_candidates[candidate_id] = candidate
+
+    return list(unique_candidates.values())
+
+
+def update_life_threatening_alerts(
+    results: dict[str, dict[str, Any]],
+) -> None:
+    """
+    Verify life-threatening candidates over a continuous
+    three-second interval.
+
+    Candidate detection must already account for valid,
+    fresh measurements in condition_engine.
+
+    A candidate disappearing resets its verification timer.
+    """
+
+    now_monotonic = time.monotonic()
+    now_iso = utc_now_iso()
+
+    with _alarm_lock:
+
+        for astronaut_id, result in results.items():
+
+            assessment = result.get(
+                "assessment",
+                {},
+            )
+
+            candidates = get_life_threatening_candidates(
+                assessment
+            )
+
+            if not candidates:
+
+                _life_threatening_candidates.pop(
+                    astronaut_id,
+                    None,
+                )
+
+                continue
+
+            candidate_ids = sorted(
+                str(
+                    candidate.get(
+                        "id",
+                        "LIFE_THREATENING_EVENT",
+                    )
+                )
+                for candidate in candidates
+            )
+
+            signature = "|".join(candidate_ids)
+
+            current_state = _life_threatening_candidates.get(
+                astronaut_id
+            )
+
+            # A changed candidate set starts a new verification period.
+            if (
+                current_state is None
+                or current_state["signature"] != signature
+            ):
+
+                _life_threatening_candidates[
+                    astronaut_id
+                ] = {
+                    "signature": signature,
+                    "started_at_monotonic": now_monotonic,
+                    "started_at": now_iso,
+                    "verified": False,
+                }
+
+                continue
+
+            elapsed = (
+                now_monotonic
+                - current_state["started_at_monotonic"]
+            )
+
+            if elapsed < LIFE_THREATENING_VERIFICATION_SECONDS:
+                continue
+
+            if current_state["verified"]:
+                continue
+
+            current_state["verified"] = True
+
+            # Do not create another unacknowledged alert
+            # for the same astronaut and candidate signature.
+            existing_alert = any(
+                alert["astronaut_id"] == astronaut_id
+                and alert["signature"] == signature
+                and alert.get("resolved_at") is None
+                for alert in _crew_alerts.values()
+            )
+
+            if existing_alert:
+                continue
+
+            alert_id = f"alert-{next(_alert_id_counter)}"
+
+            _crew_alerts[alert_id] = {
+                "alert_id": alert_id,
+                "astronaut_id": astronaut_id,
+                "type": "LIFE_THREATENING",
+                "status": "CONFIRMED",
+                "life_threatening": True,
+                "candidate_conditions": deepcopy(
+                    candidates
+                ),
+                "signature": signature,
+                "created_at": now_iso,
+                "verification_duration_seconds": round(
+                    elapsed,
+                    2,
+                ),
+                "acknowledgement": None,
+                "acknowledged_at": None,
+                "resolved_at": None,
+            }
+
+
+def get_crew_alerts(
+    astronaut_id: str | None = None,
+    include_resolved: bool = False,
+) -> list[dict[str, Any]]:
+    with _alarm_lock:
+
+        alerts = []
+
+        for alert in _crew_alerts.values():
+
+            if (
+                astronaut_id is not None
+                and alert["astronaut_id"] != astronaut_id
+            ):
+                continue
+
+            if (
+                not include_resolved
+                and alert.get("resolved_at") is not None
+            ):
+                continue
+
+            alerts.append(
+                deepcopy(alert)
+            )
+
+        return sorted(
+            alerts,
+            key=lambda item: item["created_at"],
+            reverse=True,
+        )
+
+
+def acknowledge_crew_alert(
+    alert_id: str,
+    response: str,
+) -> dict[str, Any]:
+
+    with _alarm_lock:
+
+        alert = _crew_alerts.get(
+            alert_id
+        )
+
+        if alert is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Alert not found.",
+            )
+
+        if alert.get("resolved_at") is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="This alert has already been resolved.",
+            )
+
+        if alert.get("acknowledgement") is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="This alert has already been acknowledged.",
+            )
+
+        alert["acknowledgement"] = response
+        alert["acknowledged_at"] = utc_now_iso()
+
+        if response == "I_AM_OK":
+            alert["resolved_at"] = utc_now_iso()
+            alert["status"] = "RESOLVED"
+
+        elif response == "INTERVENING":
+            alert["status"] = "INTERVENTION_IN_PROGRESS"
+
+        return deepcopy(alert)
+
+
+# ==================================================
 # DATA COLLECTION AND EVALUATION
 # ==================================================
 
 def collect_and_evaluate_all() -> dict[str, dict[str, Any]]:
-    """
-    Refresh shared data once, then collect and evaluate
-    an independent snapshot for every astronaut.
-
-    The shuffler is responsible for maintaining:
-    - Independent physiological states.
-    - Independent scenario configurations.
-    - Shared environmental state.
-    - Shared external NASA data.
-    """
 
     astronaut_ids = get_astronaut_ids()
 
-    # The shuffler refreshes the entire crew and shared
-    # environment in one operation.
     with _shuffler_lock:
         snapshots = shuffler.generate_all_snapshots(
             include_remote=True
@@ -184,7 +464,9 @@ def collect_and_evaluate_all() -> dict[str, dict[str, Any]]:
 
     for astronaut_id in astronaut_ids:
 
-        snapshot = snapshots.get(astronaut_id)
+        snapshot = snapshots.get(
+            astronaut_id
+        )
 
         if not isinstance(snapshot, dict):
             raise RuntimeError(
@@ -204,33 +486,44 @@ def collect_and_evaluate_all() -> dict[str, dict[str, Any]]:
     return results
 
 
-def refresh_latest_results() -> dict[str, dict[str, Any]]:
+def publish_results(
+    results: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
     """
-    Refresh and atomically replace the latest results
-    for all configured astronauts.
-
-    The refresh lock prevents an older refresh from
-    overwriting results from a newer scenario update.
+    Process alarms and atomically publish the latest
+    results for the complete crew.
     """
 
     global _latest_results
+
+    update_life_threatening_alerts(
+        results
+    )
+
+    with _result_lock:
+        _latest_results = deepcopy(
+            results
+        )
+
+        return deepcopy(
+            _latest_results
+        )
+
+
+def refresh_latest_results() -> dict[str, dict[str, Any]]:
 
     with _refresh_lock:
 
         results = collect_and_evaluate_all()
 
-        with _result_lock:
-            _latest_results = results
-
-            return deepcopy(_latest_results)
+        return publish_results(
+            results
+        )
 
 
 def get_latest_result(
     astronaut_id: str,
 ) -> dict[str, Any]:
-    """
-    Return the latest result for one astronaut.
-    """
 
     astronaut_id = validate_astronaut_id(
         astronaut_id
@@ -244,7 +537,6 @@ def get_latest_result(
         if result is not None:
             return deepcopy(result)
 
-    # No result exists yet. Trigger an initial refresh.
     refresh_latest_results()
 
     with _result_lock:
@@ -262,12 +554,11 @@ def get_latest_result(
 
 
 def get_all_latest_results() -> dict[str, dict[str, Any]]:
-    """
-    Return an independent copy of the latest crew results.
-    """
 
     with _result_lock:
-        results = deepcopy(_latest_results)
+        results = deepcopy(
+            _latest_results
+        )
 
     if not results:
         results = refresh_latest_results()
@@ -282,9 +573,6 @@ def get_all_latest_results() -> dict[str, dict[str, Any]]:
 def get_current_scenario(
     astronaut_id: str,
 ) -> dict[str, Any]:
-    """
-    Return the active scenario of one astronaut.
-    """
 
     astronaut_id = validate_astronaut_id(
         astronaut_id
@@ -301,22 +589,11 @@ def set_scenario_and_refresh(
     mode: str,
     abnormalities: list[str] | None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """
-    Change one astronaut's scenario and immediately
-    refresh the crew snapshots and health assessments.
-
-    Only the selected astronaut's scenario is changed.
-    Shared environment data is refreshed without
-    performing additional remote API requests.
-    """
-
-    global _latest_results
 
     astronaut_id = validate_astronaut_id(
         astronaut_id
     )
 
-    # Serialize scenario changes with background refreshes.
     with _refresh_lock:
 
         with _shuffler_lock:
@@ -327,8 +604,6 @@ def set_scenario_and_refresh(
                 astronaut_id=astronaut_id,
             )
 
-            # Advance the crew and shared environment once.
-            # Do not make another NASA API request here.
             snapshots = shuffler.refresh_all_data(
                 include_remote=False
             )
@@ -342,7 +617,9 @@ def set_scenario_and_refresh(
 
         for current_id in get_astronaut_ids():
 
-            snapshot = snapshots.get(current_id)
+            snapshot = snapshots.get(
+                current_id
+            )
 
             if not isinstance(snapshot, dict):
                 raise RuntimeError(
@@ -359,16 +636,57 @@ def set_scenario_and_refresh(
                 "assessment": assessment,
             }
 
-        # Replace all results together. This ensures that
-        # every result belongs to the same refresh cycle.
-        with _result_lock:
-            _latest_results = results
+        published = publish_results(
+            results
+        )
 
-            selected_result = deepcopy(
-                _latest_results[astronaut_id]
-            )
+        selected_result = published[
+            astronaut_id
+        ]
 
         return scenario, selected_result
+
+
+# ==================================================
+# DAILY ENTRY MANAGEMENT
+# ==================================================
+
+def save_daily_entry(
+    request: DailyEntryRequest,
+) -> dict[str, Any]:
+
+    astronaut_id = validate_astronaut_id(
+        request.astronaut_id
+    )
+
+    entry = {
+        "astronaut_id": astronaut_id,
+        "sleep_hours": request.sleep_hours,
+        "fatigue_level": request.fatigue_level,
+        "stress_level": request.stress_level,
+        "recorded_at": utc_now_iso(),
+    }
+
+    with _daily_entry_lock:
+        _daily_entries[astronaut_id] = entry
+
+    return deepcopy(entry)
+
+
+def get_daily_entry(
+    astronaut_id: str,
+) -> dict[str, Any] | None:
+
+    astronaut_id = validate_astronaut_id(
+        astronaut_id
+    )
+
+    with _daily_entry_lock:
+        entry = _daily_entries.get(
+            astronaut_id
+        )
+
+        return deepcopy(entry)
 
 
 # ==================================================
@@ -376,13 +694,6 @@ def set_scenario_and_refresh(
 # ==================================================
 
 async def refresh_loop() -> None:
-    """
-    Periodically refresh all astronaut measurements.
-
-    API requests do not independently advance
-    the simulation. The background loop owns
-    the regular refresh cycle.
-    """
 
     while True:
 
@@ -407,10 +718,6 @@ async def refresh_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """
-    Initialize the crew data and start the
-    background refresh task.
-    """
 
     astronaut_ids = get_astronaut_ids()
 
@@ -419,7 +726,6 @@ async def lifespan(_app: FastAPI):
         + ", ".join(astronaut_ids)
     )
 
-    # Initial crew snapshot.
     await asyncio.to_thread(
         refresh_latest_results
     )
@@ -473,26 +779,11 @@ app.add_middleware(
 # RESPONSE HELPERS
 # ==================================================
 
-def utc_now_iso() -> str:
-    return datetime.now(
-        timezone.utc
-    ).isoformat()
-
-
 def measurement_quality(
     snapshot: dict[str, Any],
     group_name: str,
     measurement_name: str,
 ) -> str:
-    """
-    Determine measurement quality.
-
-    Measurements supported by condition_engine
-    use its freshness validation.
-
-    Other measurements remain UNKNOWN until
-    dedicated validation rules are implemented.
-    """
 
     group = snapshot.get(
         group_name,
@@ -527,6 +818,7 @@ def measurement_quality(
             TypeError,
             AttributeError,
             ValueError,
+            OverflowError,
         ):
             return "UNKNOWN"
 
@@ -539,10 +831,6 @@ def build_measurement(
     measurement_name: str,
     value: Any,
 ) -> dict[str, Any]:
-    """
-    Convert a raw measurement into the API
-    measurement response format.
-    """
 
     metadata = snapshot.get(
         "measurement_metadata",
@@ -580,12 +868,6 @@ def build_measurement(
 def build_telemetry(
     snapshot: dict[str, Any],
 ) -> dict[str, Any]:
-    """
-    Build telemetry groups for the frontend.
-
-    Physiological measurements are astronaut-specific.
-    Environmental measurements are shared.
-    """
 
     telemetry = {}
 
@@ -619,7 +901,6 @@ def build_telemetry(
 
         telemetry[group_name] = telemetry_group
 
-    # Contextual data, not ordinary physiological measurements.
     telemetry["iss_position_data"] = deepcopy(
         snapshot.get(
             "iss_position_data",
@@ -647,10 +928,6 @@ def build_telemetry(
 def build_dashboard_response(
     result: dict[str, Any],
 ) -> dict[str, Any]:
-    """
-    Build the complete dashboard response
-    for one astronaut.
-    """
 
     snapshot = result["snapshot"]
     assessment = result["assessment"]
@@ -698,6 +975,14 @@ def build_dashboard_response(
         "data_quality": assessment[
             "data_quality"
         ],
+
+        "daily_entry": get_daily_entry(
+            result["astronaut_id"]
+        ),
+
+        "life_threatening_alerts": get_crew_alerts(
+            astronaut_id=result["astronaut_id"]
+        ),
     }
 
 
@@ -777,6 +1062,7 @@ async def crew():
                 "overall_status": "UNKNOWN",
                 "active_conditions": [],
                 "scenario": None,
+                "daily_entry": get_daily_entry(astronaut_id),
             })
             continue
 
@@ -807,6 +1093,14 @@ async def crew():
                     [],
                 ),
             },
+            "daily_entry": get_daily_entry(
+                astronaut_id
+            ),
+            "unresolved_alert_count": len(
+                get_crew_alerts(
+                    astronaut_id=astronaut_id
+                )
+            ),
         })
 
     return {
@@ -814,6 +1108,97 @@ async def crew():
         "generated_at": utc_now_iso(),
         "crew_count": len(crew_members),
         "crew": crew_members,
+        "alerts": get_crew_alerts(),
+    }
+
+
+# ==================================================
+# CREW ALERTS
+# ==================================================
+
+@app.get("/api/v1/crew/alerts")
+async def crew_alert_list(
+    astronaut_id: str | None = Query(
+        default=None,
+    ),
+    include_resolved: bool = Query(
+        default=False,
+    ),
+):
+
+    if astronaut_id is not None:
+        astronaut_id = validate_astronaut_id(
+            astronaut_id
+        )
+
+    return {
+        "api_version": API_VERSION,
+        "generated_at": utc_now_iso(),
+        "alerts": get_crew_alerts(
+            astronaut_id=astronaut_id,
+            include_resolved=include_resolved,
+        ),
+    }
+
+
+@app.post("/api/v1/crew/alerts/{alert_id}/acknowledge")
+async def crew_alert_acknowledge(
+    alert_id: str,
+    request: AlertAcknowledgementRequest,
+):
+
+    alert = acknowledge_crew_alert(
+        alert_id,
+        request.response,
+    )
+
+    return {
+        "api_version": API_VERSION,
+        "generated_at": utc_now_iso(),
+        "message": "Alert acknowledgement recorded.",
+        "alert": alert,
+    }
+
+
+# ==================================================
+# DAILY ENTRY
+# ==================================================
+
+@app.post("/api/v1/daily-entry")
+async def daily_entry_create(
+    request: DailyEntryRequest,
+):
+
+    entry = await asyncio.to_thread(
+        save_daily_entry,
+        request,
+    )
+
+    return {
+        "api_version": API_VERSION,
+        "message": "Daily entry saved successfully.",
+        "entry": entry,
+    }
+
+
+@app.get("/api/v1/astronauts/{astronaut_id}/daily-entry")
+async def daily_entry_get(
+    astronaut_id: str,
+):
+
+    astronaut_id = validate_astronaut_id(
+        astronaut_id
+    )
+
+    entry = get_daily_entry(
+        astronaut_id
+    )
+
+    return {
+        "api_version": API_VERSION,
+        "astronaut_id": astronaut_id,
+        "generated_at": utc_now_iso(),
+        "entry": entry,
     }
 
 
@@ -834,24 +1219,20 @@ async def environment():
             detail="Shared environmental data is unavailable.",
         ) from exc
 
-    environmental_data = shared_data.get(
-        "environmental_data",
-        {},
-    )
-
-    metadata = shared_data.get(
-        "environment_measurement_metadata",
-        {},
-    )
-
     return {
         "api_version": API_VERSION,
         "generated_at": shared_data.get(
             "generated_at",
             utc_now_iso(),
         ),
-        "environmental_data": environmental_data,
-        "measurement_metadata": metadata,
+        "environmental_data": shared_data.get(
+            "environmental_data",
+            {},
+        ),
+        "measurement_metadata": shared_data.get(
+            "environment_measurement_metadata",
+            {},
+        ),
     }
 
 
@@ -878,17 +1259,14 @@ async def space_data():
             "generated_at",
             utc_now_iso(),
         ),
-
         "iss_position_data": shared_data.get(
             "iss_position_data",
             {},
         ),
-
         "space_weather_data": shared_data.get(
             "space_weather_data",
             {},
         ),
-
         "radiation_dosimetry_data": shared_data.get(
             "radiation_dosimetry_data",
             {},
@@ -987,7 +1365,6 @@ async def astronaut_change_scenario(
     )
 
     try:
-
         scenario, result = await asyncio.to_thread(
             set_scenario_and_refresh,
             astronaut_id,
@@ -996,7 +1373,6 @@ async def astronaut_change_scenario(
         )
 
     except (TypeError, ValueError) as exc:
-
         raise HTTPException(
             status_code=422,
             detail=str(exc),
@@ -1058,7 +1434,6 @@ async def astronaut_ecg(
     snapshot = result["snapshot"]
 
     try:
-
         samples = await asyncio.to_thread(
             get_ecg_samples_threadsafe,
             astronaut_id,
@@ -1070,7 +1445,6 @@ async def astronaut_ecg(
         ValueError,
         KeyError,
     ) as exc:
-
         raise HTTPException(
             status_code=400,
             detail=str(exc),
@@ -1090,20 +1464,12 @@ async def astronaut_ecg(
         "unit": "mV",
         "sample_count": len(samples),
         "samples": samples,
-        "data_type": (
-            "SYNTHETIC_VISUALIZATION_ONLY"
-        ),
+        "data_type": "SYNTHETIC_VISUALIZATION_ONLY",
     }
 
 
 # ==================================================
 # LEGACY USER1 ENDPOINTS
-# ==================================================
-#
-# These routes preserve compatibility with the
-# original single-astronaut frontend integration.
-#
-# All legacy routes operate on DEFAULT_ASTRONAUT_ID.
 # ==================================================
 
 @app.get("/api/v1/dashboard")
@@ -1164,7 +1530,6 @@ async def change_scenario(
 ):
 
     try:
-
         scenario, result = await asyncio.to_thread(
             set_scenario_and_refresh,
             DEFAULT_ASTRONAUT_ID,
@@ -1173,7 +1538,6 @@ async def change_scenario(
         )
 
     except (TypeError, ValueError) as exc:
-
         raise HTTPException(
             status_code=422,
             detail=str(exc),
@@ -1241,7 +1605,6 @@ def print_result(
     for condition in assessment[
         "active_conditions"
     ]:
-
         print(
             f"- {condition['id']}: "
             f"{condition['status']}"
@@ -1255,7 +1618,6 @@ def print_result(
     for measurement, details in assessment[
         "data_quality"
     ].items():
-
         print(
             f"- {measurement}: "
             f"{details['quality']}"

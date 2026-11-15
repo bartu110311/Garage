@@ -1,7 +1,7 @@
 
 """
 Astronaut Health Data Shuffler
-Version: 2.0.0
+Version: 2.1.0
 
 Multi-astronaut synthetic simulation with:
 - Independent physiological state for each astronaut
@@ -37,7 +37,7 @@ from urllib.request import Request, urlopen
 # CONFIGURATION
 # ============================================================
 
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 
 ASTRONAUT_IDS = ("user1", "user2", "user3")
 
@@ -57,6 +57,8 @@ SUPPORTED_ABNORMALITIES = (
     "HYPOTHERMIA",
     "FEVER",
     "HYPOXEMIA",
+    "SEVERE_HYPOXEMIA",
+    "CARDIAC_ARREST",
     "TACHYPNEA",
     "HYPERTENSION",
     "HYPOTENSION",
@@ -67,6 +69,9 @@ _ABNORMALITY_CONFLICTS = (
     frozenset(("TACHYCARDIA", "BRADYCARDIA")),
     frozenset(("HYPOTHERMIA", "FEVER")),
     frozenset(("HYPERTENSION", "HYPOTENSION")),
+    frozenset(("HYPOXEMIA", "SEVERE_HYPOXEMIA")),
+    frozenset(("CARDIAC_ARREST", "TACHYCARDIA")),
+    frozenset(("CARDIAC_ARREST", "BRADYCARDIA")),
 )
 
 ECG_SAMPLE_RATE_HZ = 500
@@ -249,7 +254,13 @@ def validate_number(name, value, minimum, maximum):
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TypeError(f"{name} must be numeric.")
 
-    if not math.isfinite(value):
+    try:
+        is_finite = math.isfinite(value)
+
+    except OverflowError as exc:
+        raise ValueError(f"{name} must be finite.") from exc
+
+    if not is_finite:
         raise ValueError(f"{name} must be finite.")
 
     if not minimum <= value <= maximum:
@@ -328,19 +339,33 @@ def iso_utc(timestamp=None):
 def parse_timestamp(value):
     """Parse an ISO-8601 timestamp or Unix timestamp into UTC datetime."""
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        if not math.isfinite(value):
-            raise ValueError("Timestamp must be finite.")
+        try:
+            if not math.isfinite(value):
+                raise ValueError("Timestamp must be finite.")
 
-        return datetime.fromtimestamp(
-            value,
-            tz=timezone.utc,
-        )
+            return datetime.fromtimestamp(
+                value,
+                tz=timezone.utc,
+            )
+
+        except (OverflowError, OSError) as exc:
+            raise ValueError(
+                "Timestamp is outside the supported range."
+            ) from exc
 
     if not isinstance(value, str):
         raise ValueError("Unsupported timestamp format.")
 
     normalized = value.strip().replace("Z", "+00:00")
-    parsed = datetime.fromisoformat(normalized)
+
+    if not normalized:
+        raise ValueError("Timestamp cannot be empty.")
+
+    try:
+        parsed = datetime.fromisoformat(normalized)
+
+    except ValueError as exc:
+        raise ValueError("Invalid ISO-8601 timestamp.") from exc
 
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
@@ -576,6 +601,9 @@ def _build_abnormality_targets(selected):
         elif item == "BRADYCARDIA":
             targets["heart_rate"] = random_value(48, 55, 1)
 
+        elif item == "CARDIAC_ARREST":
+            targets["heart_rate"] = 0.0
+
         elif item == "HYPOTHERMIA":
             targets["body_temperature"] = random_value(34.2, 34.8, 2)
 
@@ -584,6 +612,10 @@ def _build_abnormality_targets(selected):
 
         elif item == "HYPOXEMIA":
             targets["spo2"] = random_value(92, 94, 1)
+
+        elif item == "SEVERE_HYPOXEMIA":
+            targets["spo2"] = 65.0
+            targets["respiratory_rate"] = 28.0
 
         elif item == "TACHYPNEA":
             targets["respiratory_rate"] = random_value(22, 25, 1)
@@ -613,6 +645,11 @@ def set_simulation_scenario(
             "ABNORMAL",
             ["HYPERGLYCEMIA"],
             astronaut_id="user2",
+        )
+        set_simulation_scenario(
+            "ABNORMAL",
+            ["CARDIAC_ARREST"],
+            astronaut_id="user3",
         )
     """
 
@@ -699,6 +736,13 @@ def set_simulation_scenario(
             astronaut["state"][key] = target
             astronaut["last_publish"].pop(key, None)
 
+        # Reset ECG phase when entering or leaving cardiac arrest.
+        if (
+            "CARDIAC_ARREST" in selected
+            or "CARDIAC_ARREST" in astronaut["active_abnormalities"]
+        ):
+            astronaut["ecg_phase"] = 0.0
+
         _sync_user1_compatibility()
 
         return get_simulation_scenario(astronaut_id)
@@ -737,6 +781,7 @@ def _sync_user1_compatibility():
     global physiological_data
     global measurement_metadata
     global _last_publish
+    global ASTRONAUT_PROFILE
 
     user1 = _astronauts["user1"]
 
@@ -747,6 +792,10 @@ def _sync_user1_compatibility():
     physiological_data = user1["physiological_data"]
     measurement_metadata = user1["measurement_metadata"]
     _last_publish = user1["last_publish"]
+
+    # Keep both compatibility references aligned after profile replacement.
+    ASTRONAUT_PROFILES["user1"] = user1["profile"]
+    ASTRONAUT_PROFILE = user1["profile"]
 
 
 # ============================================================
@@ -956,14 +1005,12 @@ def apply_scenario_overrides(
     """Apply one astronaut's active scenario targets."""
     astronaut_id = validate_astronaut_id(astronaut_id)
 
-    if dt <= 0:
-        return
-
     astronaut = _astronauts[astronaut_id]
     state = astronaut["state"]
     mode = astronaut["mode"]
+    abnormalities = set(astronaut["active_abnormalities"])
 
-    if mode == "ABNORMAL":
+    if dt > 0 and mode == "ABNORMAL":
         time_constants = {
             "heart_rate": 12.0,
             "blood_glucose": 90.0,
@@ -985,7 +1032,17 @@ def apply_scenario_overrides(
                 time_constants.get(key, 20.0),
             )
 
-    if mode == "SLEEP":
+    # These scenarios require exact, persistent synthetic values.
+    # Apply them after smoothing so the normal physiological model
+    # cannot gradually overwrite their target measurements.
+    if "CARDIAC_ARREST" in abnormalities:
+        state["heart_rate"] = 0.0
+
+    if "SEVERE_HYPOXEMIA" in abnormalities:
+        state["spo2"] = 65.0
+        state["respiratory_rate"] = 28.0
+
+    if dt > 0 and mode == "SLEEP":
         state["sleep_duration"] = min(
             12.0,
             state["sleep_duration"] + dt / 3600.0,
@@ -1078,6 +1135,13 @@ def _publish_astronaut_values(
 ):
     state = astronaut["state"]
     profile = astronaut["profile"]
+    abnormalities = set(astronaut["active_abnormalities"])
+
+    spo2_minimum = (
+        0
+        if "SEVERE_HYPOXEMIA" in abnormalities
+        else 90
+    )
 
     source = {
         "heart_rate": round(state["heart_rate"], 1),
@@ -1098,7 +1162,7 @@ def _publish_astronaut_values(
             1,
         ),
         "spo2": round(
-            clamp(state["spo2"], 90, 100),
+            clamp(state["spo2"], spo2_minimum, 100),
             1,
         ),
         "body_temperature": round(
@@ -1251,6 +1315,9 @@ def get_ecg_samples(
 
     Output values are millivolts (mV).
     This is for visualization only, not diagnostic ECG data.
+
+    In the explicit CARDIAC_ARREST simulation scenario, the
+    generated signal is a flatline consisting of exact zeros.
     """
 
     astronaut_id = validate_astronaut_id(astronaut_id)
@@ -1270,6 +1337,15 @@ def get_ecg_samples(
 
     with _state_lock:
         astronaut = _astronauts[astronaut_id]
+
+        if "CARDIAC_ARREST" in astronaut["active_abnormalities"]:
+            astronaut["ecg_phase"] = 0.0
+
+            if astronaut_id == "user1":
+                global _ecg_phase
+                _ecg_phase = 0.0
+
+            return [0.0] * sample_count
 
         bpm = astronaut["physiological_data"].get(
             "heart_rate",
@@ -1299,7 +1375,6 @@ def get_ecg_samples(
         astronaut["ecg_phase"] = phase
 
         if astronaut_id == "user1":
-            global _ecg_phase
             _ecg_phase = phase
 
         return samples
@@ -2410,11 +2485,10 @@ def set_astronaut_profile(
             new_profile
         )
 
-        if astronaut_id == "user1":
-            ASTRONAUT_PROFILES["user1"] = new_profile
+        ASTRONAUT_PROFILES[astronaut_id] = new_profile
 
-        else:
-            ASTRONAUT_PROFILES[astronaut_id] = new_profile
+        if astronaut_id == "user1":
+            _sync_user1_compatibility()
 
         return deepcopy(new_profile)
 
@@ -2550,6 +2624,8 @@ def _print_client_help():
     print("  user1 abnormal hyperglycemia")
     print("  user1 abnormal hyperglycemia tachycardia")
     print("  user2 abnormal hypoxemia")
+    print("  user2 abnormal severe_hypoxemia")
+    print("  user3 abnormal cardiac_arrest")
     print("  user3 normal")
     print()
     print("  user1 status")
