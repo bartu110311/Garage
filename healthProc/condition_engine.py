@@ -147,14 +147,10 @@ def parse_timestamp(value):
         if normalized.endswith("Z"):
             normalized = normalized[:-1] + "+00:00"
 
-        parsed = datetime.fromisoformat(
-            normalized
-        )
+        parsed = datetime.fromisoformat(normalized)
 
         if parsed.tzinfo is None:
-            parsed = parsed.replace(
-                tzinfo=timezone.utc
-            )
+            parsed = parsed.replace(tzinfo=timezone.utc)
 
         return parsed.astimezone(timezone.utc)
 
@@ -175,9 +171,7 @@ def get_measurement(snapshot, measurement_name):
     if not isinstance(snapshot, dict):
         return None
 
-    group = MEASUREMENT_GROUPS.get(
-        measurement_name
-    )
+    group = MEASUREMENT_GROUPS.get(measurement_name)
 
     if group is None:
         return None
@@ -202,10 +196,7 @@ def get_interpretation_readiness(result):
     if not isinstance(result, dict):
         return True
 
-    readiness = result.get(
-        "interpretation_ready",
-        True,
-    )
+    readiness = result.get("interpretation_ready", True)
 
     if not isinstance(readiness, bool):
         return False
@@ -273,29 +264,19 @@ def validate_measurement(snapshot, measurement_name):
             "measured_at": None,
         }
 
-    all_metadata = snapshot.get(
-        "measurement_metadata",
-        {},
-    )
+    all_metadata = snapshot.get("measurement_metadata", {})
 
     if not isinstance(all_metadata, dict):
         all_metadata = {}
 
-    metadata = all_metadata.get(
-        measurement_name,
-        {},
-    )
+    metadata = all_metadata.get(measurement_name, {})
 
     if not isinstance(metadata, dict):
         metadata = {}
 
-    measured_at = metadata.get(
-        "measured_at"
-    )
+    measured_at = metadata.get("measured_at")
 
-    parsed_time = parse_timestamp(
-        measured_at
-    )
+    parsed_time = parse_timestamp(measured_at)
 
     if parsed_time is None:
         return {
@@ -417,13 +398,8 @@ def evaluate_blood_pressure(snapshot, condition_id):
         "diastolic_bp",
     )
 
-    valid_systolic = (
-        systolic["quality"] == "VALID"
-    )
-
-    valid_diastolic = (
-        diastolic["quality"] == "VALID"
-    )
+    valid_systolic = systolic["quality"] == "VALID"
+    valid_diastolic = diastolic["quality"] == "VALID"
 
     if not valid_systolic and not valid_diastolic:
         return None
@@ -490,9 +466,7 @@ def evaluate_blood_pressure(snapshot, condition_id):
             "diastolic": diastolic["measured_at"],
         },
         "quality": "VALID",
-        "interpretation_ready": all(
-            readiness_values
-        ),
+        "interpretation_ready": all(readiness_values),
     }
 
 
@@ -523,9 +497,7 @@ def evaluate_hypoxemia(snapshot):
     if spo2["value"] > 94:
         return None
 
-    valid_respiration = (
-        respiration["quality"] == "VALID"
-    )
+    valid_respiration = respiration["quality"] == "VALID"
 
     supporting_factor = (
         valid_respiration
@@ -560,9 +532,7 @@ def evaluate_hypoxemia(snapshot):
         "life_threatening_candidate": (
             spo2["value"] < SEVERE_HYPOXEMIA_THRESHOLD
         ),
-        "interpretation_ready": all(
-            readiness_values
-        ),
+        "interpretation_ready": all(readiness_values),
     }
 
 
@@ -631,9 +601,7 @@ def evaluate_conditions(snapshot):
 
         elif condition_id == "HYPOXEMIA":
 
-            result = evaluate_hypoxemia(
-                snapshot
-            )
+            result = evaluate_hypoxemia(snapshot)
 
         else:
 
@@ -694,33 +662,20 @@ def evaluate_conditions(snapshot):
         )
 
         active_conditions.append({
-
             "id": condition_id,
-
             "status": status,
-
             "life_threatening_candidate": (
                 life_threatening_candidate
             ),
-
-            "title": CONDITION_RULES[
-                condition_id
-            ]["title"],
-
+            "title": CONDITION_RULES[condition_id]["title"],
             "description": (
                 "A measurement-based synthetic finding was detected."
             ),
-
             **result,
-
             "recommendations": [],
-
             "related_measurements": (
-                CONDITION_RULES[
-                    condition_id
-                ]["measurements"]
+                CONDITION_RULES[condition_id]["measurements"]
             ),
-
         })
 
     # Determine overall status from the most severe
@@ -732,7 +687,14 @@ def evaluate_conditions(snapshot):
         "CRITICAL": 3,
     }
 
-    overall_status = "NORMAL"
+    # Any missing, stale, invalid or unknown required measurement
+    # means the evaluation is incomplete and must not be reported
+    # as NORMAL. More severe active findings still take precedence.
+    overall_status = (
+        "CAUTION"
+        if data_quality
+        else "NORMAL"
+    )
 
     for condition in active_conditions:
 
@@ -745,7 +707,6 @@ def evaluate_conditions(snapshot):
             condition_severity
             > severity_order[overall_status]
         ):
-
             overall_status = condition["status"]
 
     return {

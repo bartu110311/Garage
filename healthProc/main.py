@@ -187,6 +187,29 @@ def validate_astronaut_id(
 # LIFE-THREATENING ALERT MANAGEMENT
 # ==================================================
 
+def reset_life_threatening_verification() -> None:
+    """
+    Reset all pending life-threatening verification timers.
+
+    A failed crew refresh breaks continuous verification
+    because the candidate state cannot be confirmed.
+    """
+
+    with _alarm_lock:
+        pending_astronaut_ids = [
+            astronaut_id
+            for astronaut_id, state
+            in _life_threatening_candidates.items()
+            if not state.get("verified", False)
+        ]
+
+        for astronaut_id in pending_astronaut_ids:
+            _life_threatening_candidates.pop(
+                astronaut_id,
+                None,
+            )
+
+
 def get_life_threatening_candidates(
     assessment: dict[str, Any],
 ) -> list[dict[str, Any]]:
@@ -313,11 +336,40 @@ def update_life_threatening_alerts(
                 ] = {
                     "signature": signature,
                     "started_at_monotonic": now_monotonic,
+                    "last_seen_monotonic": now_monotonic,
                     "started_at": now_iso,
                     "verified": False,
                 }
 
                 continue
+
+            # A long gap between successful observations breaks
+            # continuous verification. This prevents a delayed
+            # refresh (for example, a slow external API request)
+            # from satisfying the three-second verification window.
+            maximum_observation_gap = (
+                REFRESH_INTERVAL_SECONDS * 2.0
+            )
+
+            last_seen = current_state.get(
+                "last_seen_monotonic",
+                current_state["started_at_monotonic"],
+            )
+
+            if now_monotonic - last_seen > maximum_observation_gap:
+                _life_threatening_candidates[
+                    astronaut_id
+                ] = {
+                    "signature": signature,
+                    "started_at_monotonic": now_monotonic,
+                    "last_seen_monotonic": now_monotonic,
+                    "started_at": now_iso,
+                    "verified": False,
+                }
+
+                continue
+
+            current_state["last_seen_monotonic"] = now_monotonic
 
             elapsed = (
                 now_monotonic
@@ -514,11 +566,16 @@ def refresh_latest_results() -> dict[str, dict[str, Any]]:
 
     with _refresh_lock:
 
-        results = collect_and_evaluate_all()
+        try:
+            results = collect_and_evaluate_all()
 
-        return publish_results(
-            results
-        )
+            return publish_results(
+                results
+            )
+
+        except Exception:
+            reset_life_threatening_verification()
+            raise
 
 
 def get_latest_result(
@@ -584,6 +641,13 @@ def get_current_scenario(
         )
 
 
+def get_shared_environment_snapshot() -> dict[str, Any]:
+    """Read shared shuffler state without blocking the ASGI event loop."""
+
+    with _shuffler_lock:
+        return shuffler.get_environment_snapshot()
+
+
 def set_scenario_and_refresh(
     astronaut_id: str,
     mode: str,
@@ -596,55 +660,60 @@ def set_scenario_and_refresh(
 
     with _refresh_lock:
 
-        with _shuffler_lock:
+        try:
+            with _shuffler_lock:
 
-            scenario = shuffler.set_simulation_scenario(
-                mode,
-                abnormalities,
-                astronaut_id=astronaut_id,
-            )
-
-            snapshots = shuffler.refresh_all_data(
-                include_remote=False
-            )
-
-        if not isinstance(snapshots, dict):
-            raise RuntimeError(
-                "Shuffler returned an invalid snapshot collection."
-            )
-
-        results = {}
-
-        for current_id in get_astronaut_ids():
-
-            snapshot = snapshots.get(
-                current_id
-            )
-
-            if not isinstance(snapshot, dict):
-                raise RuntimeError(
-                    f"Missing or invalid snapshot for {current_id}."
+                scenario = shuffler.set_simulation_scenario(
+                    mode,
+                    abnormalities,
+                    astronaut_id=astronaut_id,
                 )
 
-            assessment = evaluate_conditions(
-                snapshot
+                snapshots = shuffler.refresh_all_data(
+                    include_remote=False
+                )
+
+            if not isinstance(snapshots, dict):
+                raise RuntimeError(
+                    "Shuffler returned an invalid snapshot collection."
+                )
+
+            results = {}
+
+            for current_id in get_astronaut_ids():
+
+                snapshot = snapshots.get(
+                    current_id
+                )
+
+                if not isinstance(snapshot, dict):
+                    raise RuntimeError(
+                        f"Missing or invalid snapshot for {current_id}."
+                    )
+
+                assessment = evaluate_conditions(
+                    snapshot
+                )
+
+                results[current_id] = {
+                    "astronaut_id": current_id,
+                    "snapshot": snapshot,
+                    "assessment": assessment,
+                }
+
+            published = publish_results(
+                results
             )
 
-            results[current_id] = {
-                "astronaut_id": current_id,
-                "snapshot": snapshot,
-                "assessment": assessment,
-            }
+            selected_result = published[
+                astronaut_id
+            ]
 
-        published = publish_results(
-            results
-        )
+            return scenario, selected_result
 
-        selected_result = published[
-            astronaut_id
-        ]
-
-        return scenario, selected_result
+        except Exception:
+            reset_life_threatening_verification()
+            raise
 
 
 # ==================================================
@@ -1210,8 +1279,9 @@ async def daily_entry_get(
 async def environment():
 
     try:
-        with _shuffler_lock:
-            shared_data = shuffler.get_environment_snapshot()
+        shared_data = await asyncio.to_thread(
+            get_shared_environment_snapshot
+        )
 
     except Exception as exc:
         raise HTTPException(
@@ -1244,8 +1314,9 @@ async def environment():
 async def space_data():
 
     try:
-        with _shuffler_lock:
-            shared_data = shuffler.get_environment_snapshot()
+        shared_data = await asyncio.to_thread(
+            get_shared_environment_snapshot
+        )
 
     except Exception as exc:
         raise HTTPException(
@@ -1283,8 +1354,9 @@ async def astronaut_dashboard(
     astronaut_id: str,
 ):
 
-    result = get_latest_result(
-        astronaut_id
+    result = await asyncio.to_thread(
+        get_latest_result,
+        astronaut_id,
     )
 
     return build_dashboard_response(
@@ -1301,8 +1373,9 @@ async def astronaut_conditions(
     astronaut_id: str,
 ):
 
-    result = get_latest_result(
-        astronaut_id
+    result = await asyncio.to_thread(
+        get_latest_result,
+        astronaut_id,
     )
 
     return build_conditions_response(
@@ -1319,8 +1392,9 @@ async def astronaut_telemetry(
     astronaut_id: str,
 ):
 
-    result = get_latest_result(
-        astronaut_id
+    result = await asyncio.to_thread(
+        get_latest_result,
+        astronaut_id,
     )
 
     return build_telemetry_response(
@@ -1427,8 +1501,9 @@ async def astronaut_ecg(
         astronaut_id
     )
 
-    result = get_latest_result(
-        astronaut_id
+    result = await asyncio.to_thread(
+        get_latest_result,
+        astronaut_id,
     )
 
     snapshot = result["snapshot"]
@@ -1475,8 +1550,9 @@ async def astronaut_ecg(
 @app.get("/api/v1/dashboard")
 async def dashboard():
 
-    result = get_latest_result(
-        DEFAULT_ASTRONAUT_ID
+    result = await asyncio.to_thread(
+        get_latest_result,
+        DEFAULT_ASTRONAUT_ID,
     )
 
     return build_dashboard_response(
@@ -1487,8 +1563,9 @@ async def dashboard():
 @app.get("/api/v1/conditions")
 async def conditions():
 
-    result = get_latest_result(
-        DEFAULT_ASTRONAUT_ID
+    result = await asyncio.to_thread(
+        get_latest_result,
+        DEFAULT_ASTRONAUT_ID,
     )
 
     return build_conditions_response(
@@ -1499,8 +1576,9 @@ async def conditions():
 @app.get("/api/v1/telemetry")
 async def telemetry():
 
-    result = get_latest_result(
-        DEFAULT_ASTRONAUT_ID
+    result = await asyncio.to_thread(
+        get_latest_result,
+        DEFAULT_ASTRONAUT_ID,
     )
 
     return build_telemetry_response(

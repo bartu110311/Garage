@@ -348,7 +348,7 @@ def parse_timestamp(value):
                 tz=timezone.utc,
             )
 
-        except (OverflowError, OSError) as exc:
+        except (OverflowError, OSError, ValueError) as exc:
             raise ValueError(
                 "Timestamp is outside the supported range."
             ) from exc
@@ -547,28 +547,38 @@ def retry_after_seconds(headers):
         return None
 
     try:
-        return max(0.0, float(value))
+        retry_seconds = float(value)
 
-    except (TypeError, ValueError):
-        try:
-            retry_time = parsedate_to_datetime(value)
+        if math.isfinite(retry_seconds):
+            return max(0.0, retry_seconds)
 
-            if retry_time.tzinfo is None:
-                retry_time = retry_time.replace(
-                    tzinfo=timezone.utc
-                )
+    except (TypeError, ValueError, OverflowError):
+        pass
 
-            return max(
-                0.0,
-                (retry_time - utc_now()).total_seconds(),
+    try:
+        retry_time = parsedate_to_datetime(value)
+
+        if retry_time.tzinfo is None:
+            retry_time = retry_time.replace(
+                tzinfo=timezone.utc
             )
 
-        except (
-            TypeError,
-            ValueError,
-            OverflowError,
-        ):
+        retry_seconds = (
+            retry_time - utc_now()
+        ).total_seconds()
+
+        if not math.isfinite(retry_seconds):
             return None
+
+        return max(0.0, retry_seconds)
+
+    except (
+        TypeError,
+        ValueError,
+        OverflowError,
+        IndexError,
+    ):
+        return None
 
 
 def api_error_message(exc):
@@ -725,6 +735,10 @@ def set_simulation_scenario(
 
     with _state_lock:
         astronaut = _astronauts[astronaut_id]
+        previously_in_cardiac_arrest = (
+            "CARDIAC_ARREST"
+            in astronaut["active_abnormalities"]
+        )
 
         astronaut["mode"] = mode
         astronaut["active_abnormalities"] = selected
@@ -739,7 +753,7 @@ def set_simulation_scenario(
         # Reset ECG phase when entering or leaving cardiac arrest.
         if (
             "CARDIAC_ARREST" in selected
-            or "CARDIAC_ARREST" in astronaut["active_abnormalities"]
+            or previously_in_cardiac_arrest
         ):
             astronaut["ecg_phase"] = 0.0
 
@@ -1010,27 +1024,16 @@ def apply_scenario_overrides(
     mode = astronaut["mode"]
     abnormalities = set(astronaut["active_abnormalities"])
 
-    if dt > 0 and mode == "ABNORMAL":
-        time_constants = {
-            "heart_rate": 12.0,
-            "blood_glucose": 90.0,
-            "body_temperature": 45.0,
-            "spo2": 20.0,
-            "respiratory_rate": 12.0,
-            "systolic_bp": 25.0,
-            "diastolic_bp": 25.0,
-        }
-
+    if mode == "ABNORMAL":
+        # Scenario targets are applied exactly. set_simulation_scenario()
+        # already initializes these values immediately, and the normal
+        # physiological model runs before this function on each refresh.
+        # Reapplying the targets prevents that model from pulling an
+        # active synthetic abnormality back toward baseline.
         for key, target in astronaut[
             "abnormality_targets"
         ].items():
-
-            state[key] = smooth_value(
-                state[key],
-                target,
-                dt,
-                time_constants.get(key, 20.0),
-            )
+            state[key] = target
 
     # These scenarios require exact, persistent synthetic values.
     # Apply them after smoothing so the normal physiological model
@@ -1752,11 +1755,17 @@ _radlab_previous_sample = None
 _radiation_session_start = utc_now()
 
 
-def _radlab_query_url():
+def _radlab_query_start():
+    """Return the minute-aligned start of the RadLab query window."""
+    return (
+        utc_now()
+        - timedelta(hours=API_CONFIG["radlab_lookback_hours"])
+    ).replace(second=0, microsecond=0)
+
+
+def _radlab_query_url(query_start=None):
     """Build a query for recent historical ISS dose-rate records."""
-    since = utc_now() - timedelta(
-        hours=API_CONFIG["radlab_lookback_hours"]
-    )
+    since = query_start or _radlab_query_start()
 
     since_text = since.strftime(
         "%Y-%m-%dT%H:%M"
@@ -1950,9 +1959,23 @@ def update_radiation_measurements(force=False):
     _radlab_last_attempt = now_mono
 
     try:
-        url = _radlab_query_url()
+        query_start = _radlab_query_start()
+        url = _radlab_query_url(query_start)
 
         payload, _headers = http_get_json(url)
+
+        # The API only returns this rolling window. Older timestamps
+        # cannot prevent future duplicates, so prune them to keep the
+        # deduplication cache bounded during long-running sessions.
+        query_start_key = query_start.isoformat()
+        expired_timestamps = (
+            timestamp
+            for timestamp in tuple(_radlab_seen_timestamps)
+            if timestamp < query_start_key
+        )
+        _radlab_seen_timestamps.difference_update(
+            expired_timestamps
+        )
 
         rows = _radlab_rows(payload)
 
